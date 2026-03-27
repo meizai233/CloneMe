@@ -20,6 +20,10 @@ import voiceCloneRouter from './routes/voice-clone.js';
 import uploadRouter from './routes/upload.js';
 import smartChatRouter from './routes/smart-chat.js';
 import { initPersonas } from './services/persona.js';
+import authRouter from './routes/auth.js';
+import avatarsRouter from './routes/avatars.js';
+import modelsRouter from './routes/models.js';
+import './db.js'; // 初始化数据库
 
 const app = express();
 app.use(cors());
@@ -29,6 +33,9 @@ app.use(express.json({ limit: '10mb' }));
 initPersonas();
 
 // 注册 HTTP 路由
+app.use('/api/auth', authRouter);
+app.use('/api/avatars', avatarsRouter);
+app.use('/api/models', modelsRouter);
 app.use('/api/chat', chatRouter);
 app.use('/api/chat', smartChatRouter);
 app.use('/api', smartChatRouter);

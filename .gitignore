@@ -8,3 +8,9 @@ coverage/
 .kiro
 .work-master.json
 .idea
+
+# SQLite 数据库
+clone-me-server/data/
+*.db
+*.db-wal
+*.db-shm
