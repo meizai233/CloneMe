@@ -123,13 +123,18 @@ h1 {
 }
 
 textarea,
-input {
+input,
+select {
   width: 100%;
   border-radius: 10px;
   border: 1px solid #37457f;
   background: #101632;
   color: #f4f6ff;
   padding: 10px;
+}
+
+.model-select-row {
+  margin-bottom: 8px;
 }
 
 button {
@@ -163,6 +168,31 @@ button:disabled {
   border-radius: 12px;
   background: #131a3f;
   padding: 12px;
+}
+
+.question-guide-box {
+  margin: 10px 0 12px;
+  border: 1px dashed #4459ab;
+  border-radius: 12px;
+  background: #10183b;
+  padding: 12px;
+}
+
+.question-guide-box h3 {
+  margin: 0 0 6px;
+  font-size: 15px;
+}
+
+.question-guide-box p {
+  margin: 0;
+  color: #c8d4ff;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.question-guide-placeholder {
+  margin-top: 6px !important;
+  color: #9fb2fb !important;
 }
 
 .voice-clone-box h3 {
@@ -247,6 +277,49 @@ button:disabled {
 .avatar-stage > * {
   position: relative;
   z-index: 1;
+}
+
+.avatar-preview-toggle {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 3;
+  margin: 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(138, 166, 255, 0.58);
+  background: rgba(15, 22, 52, 0.72);
+  backdrop-filter: blur(4px);
+}
+
+.avatar-preview-toggle:hover {
+  background: rgba(25, 36, 88, 0.9);
+}
+
+.avatar-stage-preview-fullscreen {
+  width: 100vw;
+  height: 100vh;
+  border-radius: 0;
+}
+
+.avatar-stage-preview-fullscreen .avatar-canvas {
+  border-radius: 0;
+}
+
+.avatar-stage-preview-fullscreen::after {
+  content: "按 Esc 退出全屏";
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  z-index: 3;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: #dce4ff;
+  border: 1px solid rgba(136, 156, 233, 0.5);
+  border-radius: 999px;
+  background: rgba(8, 14, 36, 0.68);
 }
 
 .panel-avatar-floating .avatar-stage {
