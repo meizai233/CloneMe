@@ -9,9 +9,6 @@ import {
 
 const INPUT_CLS = "w-full px-3.5 py-2.5 bg-[#101632] border border-[#2c355f] rounded-lg text-[#e7ebff] text-sm placeholder:text-[#5a6080] focus:border-[#4059d4] focus:ring-2 focus:ring-[#4059d4]/20 focus:outline-none transition-all duration-200";
 const LABEL_CLS = "block text-xs text-[#b8c1ef] mb-1.5 font-medium";
-const TAB_BASE = "px-4 py-2 text-sm rounded-lg transition-all duration-200";
-const TAB_ACTIVE = `${TAB_BASE} bg-[#4059d4]/15 text-[#6b7ff5] border border-[#4059d4]/30`;
-const TAB_INACTIVE = `${TAB_BASE} text-[#b8c1ef]/60 hover:text-[#b8c1ef] border border-transparent hover:border-[#2c355f]`;
 
 type TabKey = "avatars" | "voices" | "models";
 
@@ -39,25 +36,46 @@ export default function DashboardPage() {
       <div className="fixed top-[-300px] left-1/4 w-[800px] h-[600px] bg-[#4059d4]/8 rounded-full blur-[150px] pointer-events-none" />
 
       {/* 顶栏 */}
-      <header className="sticky top-0 z-50 backdrop-blur-xl bg-[#0f1220]/80 border-b border-[#2c355f]">
-        <div className="max-w-6xl mx-auto px-6 h-14 flex items-center justify-between">
-          <h1 className="text-lg font-semibold bg-gradient-to-r from-white to-white/70 bg-clip-text text-transparent">CloneMe</h1>
-          <div className="flex items-center gap-3">
-            <span className="text-sm text-[#b8c1ef]">{user?.name}</span>
-            <button onClick={() => { logout(); navigate("/login"); }} className="text-xs text-[#b8c1ef] hover:text-white px-3 py-1.5 rounded-lg border border-[#2c355f] hover:border-[#4052a5] hover:bg-[#1a1f36] transition-all duration-200">退出</button>
+      <header className="sticky top-0 z-50 backdrop-blur-xl bg-[#0f1220]/95 border-b border-[#2c355f]">
+        <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+          {/* 左侧：Logo + 导航 */}
+          <div className="flex items-center gap-10">
+            <h1 className="text-xl font-bold tracking-tight flex items-center gap-1.5">
+              <span className="text-[#4059d4]">Clone</span><span className="text-white">Me</span>
+              <span className="text-[10px] text-[#4059d4]/60 border border-[#4059d4]/30 rounded px-1 py-0.5 ml-1 font-normal">AI</span>
+            </h1>
+            <nav className="flex items-center gap-6">
+              {tabs.map(t => (
+                <button
+                  key={t.key}
+                  onClick={() => setTab(t.key)}
+                  className={`text-sm transition-colors duration-200 ${
+                    tab === t.key
+                      ? "text-[#4059d4] font-medium"
+                      : "text-[#b8c1ef]/70 hover:text-white"
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </nav>
+          </div>
+          {/* 右侧：用户名悬浮退出 */}
+          <div className="relative group">
+            <span className="text-sm text-[#b8c1ef]/70 hover:text-white cursor-pointer transition-colors">👤 {user?.name}</span>
+            <div className="absolute right-0 top-full pt-1 hidden group-hover:block">
+              <button
+                onClick={() => { logout(); navigate("/login"); }}
+                className="whitespace-nowrap text-xs text-[#b8c1ef] hover:text-white px-4 py-2 rounded-lg bg-[#1a1f36] border border-[#2c355f] hover:border-[#4052a5] shadow-lg transition-all duration-200"
+              >
+                退出登录
+              </button>
+            </div>
           </div>
         </div>
       </header>
 
       <main className="max-w-6xl mx-auto px-6 py-8 relative z-10">
-        {/* 标签栏 */}
-        <div className="flex gap-2 mb-8">
-          {tabs.map(t => (
-            <button key={t.key} onClick={() => setTab(t.key)} className={tab === t.key ? TAB_ACTIVE : TAB_INACTIVE}>
-              {t.icon} {t.label}
-            </button>
-          ))}
-        </div>
 
         {tab === "avatars" && <AvatarsTab navigate={navigate} />}
         {tab === "voices" && <VoicesTab />}
@@ -72,6 +90,10 @@ export default function DashboardPage() {
 function AvatarsTab({ navigate }: { navigate: ReturnType<typeof useNavigate> }) {
   const [avatars, setAvatars] = useState<Avatar[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newDesc, setNewDesc] = useState("");
+  const [creating, setCreating] = useState(false);
 
   useEffect(() => { listAvatars().then(r => { setAvatars(r.avatars); setLoaded(true); }); }, []);
 
@@ -81,21 +103,51 @@ function AvatarsTab({ navigate }: { navigate: ReturnType<typeof useNavigate> }) 
     setAvatars(prev => prev.filter(a => a.id !== id));
   }
 
+  async function onCreate() {
+    if (!newName.trim()) return;
+    setCreating(true);
+    try {
+      const res = await createAvatar({ name: newName.trim(), description: newDesc.trim() });
+      setShowCreateModal(false);
+      setNewName(""); setNewDesc("");
+      navigate(`/avatar/${res.id}/chat`);
+    } catch { /* 忽略 */ }
+    finally { setCreating(false); }
+  }
+
   if (!loaded) return <p className="text-[#5a6080] text-sm">加载中...</p>;
 
   return (
     <>
+      {/* 创建弹窗 */}
+      {showCreateModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => setShowCreateModal(false)}>
+          <div className="bg-[#1a1f36] border border-[#2c355f] rounded-2xl p-6 w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
+            <h3 className="text-base font-medium text-[#e7ebff] mb-4">创建数字人</h3>
+            <div className="space-y-3 mb-5">
+              <div>
+                <label className="block text-xs text-[#b8c1ef] mb-1.5">名称 *</label>
+                <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="如：小美客服" autoFocus className="w-full px-3.5 py-2.5 bg-[#101632] border border-[#2c355f] rounded-lg text-[#e7ebff] text-sm placeholder:text-[#5a6080] focus:border-[#4059d4] focus:ring-2 focus:ring-[#4059d4]/20 focus:outline-none transition-all" />
+              </div>
+              <div>
+                <label className="block text-xs text-[#b8c1ef] mb-1.5">描述</label>
+                <input value={newDesc} onChange={e => setNewDesc(e.target.value)} placeholder="简短描述数字人的用途" className="w-full px-3.5 py-2.5 bg-[#101632] border border-[#2c355f] rounded-lg text-[#e7ebff] text-sm placeholder:text-[#5a6080] focus:border-[#4059d4] focus:ring-2 focus:ring-[#4059d4]/20 focus:outline-none transition-all" />
+              </div>
+            </div>
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setShowCreateModal(false)} className="px-4 py-2 text-sm text-[#b8c1ef] hover:text-white rounded-lg border border-[#2c355f] hover:border-[#4052a5] transition-all">取消</button>
+              <button onClick={onCreate} disabled={creating || !newName.trim()} className="px-4 py-2 text-sm text-white bg-[#4059d4] hover:bg-[#4f6ae0] rounded-lg disabled:opacity-50 transition-all">{creating ? "创建中..." : "确认"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-between mb-6">
         <div>
           <h2 className="text-xl font-semibold tracking-tight bg-gradient-to-b from-white to-white/70 bg-clip-text text-transparent">我的数字人</h2>
           <p className="text-xs text-[#b8c1ef]/60 mt-1">创建和管理你的 AI 数字分身</p>
         </div>
-        <button onClick={async () => {
-            try {
-              const res = await createAvatar({ name: `数字人_${Date.now().toString(36)}`, description: "" });
-              navigate(`/avatar/${res.id}/chat`);
-            } catch { navigate("/avatar/create"); }
-          }} className="px-4 py-2 bg-[#4059d4] hover:bg-[#4f6ae0] text-white text-sm font-medium rounded-lg shadow-[0_0_0_1px_rgba(64,89,212,0.5),0_4px_12px_rgba(64,89,212,0.25)] active:scale-[0.98] transition-all duration-200">+ 创建数字人</button>
+        <button onClick={() => setShowCreateModal(true)} className="px-4 py-2 bg-[#4059d4] hover:bg-[#4f6ae0] text-white text-sm font-medium rounded-lg shadow-[0_0_0_1px_rgba(64,89,212,0.5),0_4px_12px_rgba(64,89,212,0.25)] active:scale-[0.98] transition-all duration-200">+ 创建数字人</button>
       </div>
       {avatars.length === 0 ? (
         <div className="text-center py-20">
@@ -106,20 +158,35 @@ function AvatarsTab({ navigate }: { navigate: ReturnType<typeof useNavigate> }) 
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {avatars.map(avatar => (
-            <div key={avatar.id} className="group bg-gradient-to-b from-[#1a1f36] to-[#131a3f] border border-[#2c355f] rounded-2xl p-5 hover:border-[#4052a5] hover:shadow-[0_8px_40px_rgba(0,0,0,0.3),0_0_60px_rgba(64,89,212,0.08)] transition-all duration-300">
-              <div className="w-12 h-12 rounded-xl bg-[#4059d4]/10 border border-[#4059d4]/20 flex items-center justify-center text-2xl mb-3">
-                {avatar.model_thumbnail ? <img src={avatar.model_thumbnail} alt="" className="w-8 h-8 rounded-lg object-cover" /> : "🤖"}
-              </div>
-              <h3 className="text-[#e7ebff] font-medium text-sm">{avatar.name}</h3>
-              <p className="text-[#b8c1ef]/70 text-xs mt-1 line-clamp-2">{avatar.description || "暂无描述"}</p>
-              <div className="flex gap-2 mt-3">
-                <span className={`text-[10px] px-2 py-0.5 rounded-full border ${avatar.voice_id ? "text-emerald-400 border-emerald-500/20 bg-emerald-500/10" : "text-[#b8c1ef]/50 border-[#2c355f] bg-[#131a3f]"}`}>声音 {avatar.voice_id ? "✓" : "×"}</span>
-                <span className="text-[10px] px-2 py-0.5 rounded-full border border-[#2c355f] bg-[#131a3f] text-[#b8c1ef]/50">知识库 {avatar.docCount ?? 0}</span>
-              </div>
-              <div className="flex gap-2 mt-4 pt-3 border-t border-[#2c355f]/40">
-                <button onClick={() => navigate(`/avatar/${avatar.id}/preview`)} className="flex-1 text-xs py-1.5 rounded-lg bg-[#4059d4]/10 text-[#6b7ff5] hover:bg-[#4059d4]/20 border border-[#4059d4]/20 transition-all">👁️ 预览</button>
-                <button onClick={() => navigate(`/avatar/${avatar.id}/chat`)} className="flex-1 text-xs py-1.5 rounded-lg bg-[#1a1f36] text-[#b8c1ef] hover:bg-[#2c355f]/60 hover:text-white border border-[#2c355f] transition-all">⚙️ 编辑</button>
-                <button onClick={() => onDelete(avatar.id, avatar.name)} className="text-xs py-1.5 px-3 rounded-lg text-red-400/60 hover:text-red-400 hover:bg-red-500/10 border border-transparent hover:border-red-500/20 transition-all">删除</button>
+            <div key={avatar.id} className="group relative bg-[#1a1f36] border border-[#2c355f] rounded-xl overflow-hidden hover:border-[#4052a5] hover:shadow-[0_4px_24px_rgba(0,0,0,0.3)] transition-all duration-300">
+              {/* 左侧装饰竖线 */}
+              <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#4059d4] rounded-l-xl" />
+
+              {/* 卡片内容 */}
+              <div className="pl-5 pr-4 pt-4 pb-3">
+                {/* 标题行：名称 + 状态标签 */}
+                <div className="flex items-center gap-2 mb-2">
+                  <h3 className="text-[#e7ebff] font-semibold text-sm">{avatar.name}</h3>
+                  <span className={`text-[10px] px-2 py-0.5 rounded border ${avatar.voice_id ? "text-emerald-400 border-emerald-500/30 bg-emerald-500/10" : "text-[#6b7ff5] border-[#4059d4]/30 bg-[#4059d4]/10"}`}>
+                    {avatar.voice_id ? "已配音" : "未配音"}
+                  </span>
+                </div>
+
+                {/* 描述 */}
+                <p className="text-[#b8c1ef]/60 text-xs leading-relaxed line-clamp-2 mb-3">{avatar.description || "暂无描述"}</p>
+
+                {/* 信息行 */}
+                <div className="text-[10px] text-[#5a6080] space-y-0.5 mb-3">
+                  <p>音色：{avatar.voice_name || (avatar.voice_id ? avatar.voice_id.split("-").pop() : "-")}</p>
+                  <p>知识库：{avatar.docCount ? `${avatar.docCount} 篇` : "-"}</p>
+                </div>
+
+                {/* 底部操作栏 */}
+                <div className="flex gap-2 pt-2.5 border-t border-[#2c355f]/50">
+                  <button onClick={() => navigate(`/avatar/${avatar.id}/preview`)} className="flex-1 text-xs py-1.5 rounded-lg bg-[#4059d4]/20 text-[#90a4ff] hover:bg-[#4059d4]/30 border border-[#4059d4]/30 transition-all">预览</button>
+                  <button onClick={() => navigate(`/avatar/${avatar.id}/chat`)} className="flex-1 text-xs py-1.5 rounded-lg bg-[#2c355f]/50 text-[#d4dcff] hover:bg-[#2c355f]/80 hover:text-white border border-[#4052a5]/40 transition-all">编辑</button>
+                  <button onClick={() => onDelete(avatar.id, avatar.name)} className="text-xs py-1.5 px-3 rounded-lg text-red-400/60 hover:text-red-400 hover:bg-red-500/10 border border-transparent hover:border-red-500/20 transition-all">删除</button>
+                </div>
               </div>
             </div>
           ))}

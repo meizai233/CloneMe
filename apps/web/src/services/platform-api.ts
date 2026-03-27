@@ -81,6 +81,7 @@ export interface Avatar {
   llm_model: string;
   temperature: number;
   voice_id: string;
+  voice_name?: string;
   voice_model: string;
   live2d_model_id: string;
   model_name?: string;

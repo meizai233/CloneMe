@@ -23,7 +23,7 @@ db.exec(`
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     plan TEXT DEFAULT 'free',
-    avatar_limit INTEGER DEFAULT 3,
+    avatar_limit INTEGER DEFAULT 10,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 

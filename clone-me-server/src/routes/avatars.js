@@ -13,7 +13,7 @@ router.use(authMiddleware);
 // 列表
 router.get('/', (req, res) => {
   const avatars = db.prepare(
-    'SELECT a.*, m.name as model_name, m.thumbnail_url as model_thumbnail FROM avatars a LEFT JOIN live2d_models m ON a.live2d_model_id = m.id WHERE a.tenant_id = ? ORDER BY a.created_at DESC'
+    'SELECT a.*, m.name as model_name, m.thumbnail_url as model_thumbnail, v.speaker_name as voice_name FROM avatars a LEFT JOIN live2d_models m ON a.live2d_model_id = m.id LEFT JOIN voices v ON a.voice_id = v.voice_id AND v.tenant_id = a.tenant_id WHERE a.tenant_id = ? ORDER BY a.created_at DESC'
   ).all(req.tenantId);
   res.json({ avatars });
 });

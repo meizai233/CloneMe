@@ -9,7 +9,6 @@ import {
 } from "./avatar/live2dAdapter";
 import { avatarIntroScripts } from "./avatar/modeIntro.js";
 import {
-  createVoiceClone,
   initAvatarProfile,
   uploadAudio,
   getUploadUrl,
@@ -875,29 +874,27 @@ export default function App() {
     }
 
     try {
-      const data = await createVoiceClone({
-        audioUrl: safeAudioUrl,
-        prefix: (speakerName.trim() || "cloneme").slice(0, 10),
-        targetModel: targetModel.trim() || "cosyvoice-v2"
-      });
+      // 使用带认证的平台API进行声音克隆（后端会同时克隆+存库）
+      const prefix = (speakerName.trim() || "cloneme").replace(/[^a-zA-Z0-9]/g, "").slice(0, 10) || "cloneme";
+      const data = await createVoice(safeAudioUrl, prefix, speakerName.trim() || "我的音色", targetModel.trim() || "cosyvoice-v2");
       setVoiceId(data.voiceId);
-      // 同时保存到声音工坊（通过平台 API 存入数据库）
+      // 刷新已有声音列表
       try {
-        await createVoice(safeAudioUrl, (speakerName.trim() || "cloneme").slice(0, 10), speakerName.trim() || "我的音色", targetModel.trim() || "cosyvoice-v2");
         const voicesRes = await listVoices();
         setExistingVoices(voicesRes.voices || []);
-      } catch { /* 保存到声音工坊失败不影响主流程 */ }
+      } catch { /* 刷新列表失败不影响主流程 */ }
       // 自动绑定到当前数字人
       if (avatarId) {
         try { await updateAvatar(avatarId, { voice_id: data.voiceId } as any); } catch { /* 忽略 */ }
       }
       setHasCustomVoiceClone(true);
-      setAnswer("音色创建完成。现在提问时将优先使用克隆语音播报。");
+      setErrorMessage(null);
+      setAnswer("✅ 声音克隆成功！已自动绑定到当前数字人。");
       setReferences([]);
       adapterRef.current?.setEmotion("happy");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      setErrorMessage(message);
+      setErrorMessage(`❌ 声音克隆失败：${message}`);
     } finally {
       setVoiceCloneLoading(false);
     }
@@ -1272,31 +1269,6 @@ export default function App() {
               </div>
             )}
 
-            <p className="voice-hint">
-              {voiceId
-                ? `当前音色：${voiceId}`
-                : "未选择音色"}
-            </p>
-            {voiceId && (
-              <button
-                type="button"
-                onClick={() => {
-                  setVoiceId(null);
-                  setHasCustomVoiceClone(false);
-                  setVoiceLatency(null);
-                  if (avatarId) { updateAvatar(avatarId, { voice_id: "" } as any).catch(() => {}); }
-                }}
-                disabled={loading}
-              >
-                清除音色
-              </button>
-            )}
-            {voiceLatency && (
-              <p className="voice-metrics">
-                合成延迟：首包 {voiceLatency.firstByteMs}ms / 全量 {voiceLatency.totalMs}ms /{" "}
-                {voiceLatency.meetsTarget ? "达标" : "未达标"}
-              </p>
-            )}
           </div>
 
           <form onSubmit={onAsk}>
