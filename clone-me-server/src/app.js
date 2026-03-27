@@ -67,19 +67,10 @@ ttsWss.on('connection', (clientWs) => {
   let finishTimer = null; // 延迟 finish 的定时器
 
   /**
-   * 延迟发送 finish-task
-   * 每次收到新文本时重置定时器，确保所有文本发完后才 finish
-   * 这样多句话共用一个 task，避免每句话都重建连接
+   * 不再自动 finish，完全由前端主动发 finish 信号控制
    */
   function scheduleFinish() {
-    if (finishTimer) clearTimeout(finishTimer);
-    finishTimer = setTimeout(() => {
-      if (upstream && upstream.readyState === 1 && taskStarted) {
-        finishTTSTask(upstream, taskId);
-        console.log('[TTS] Sent finish-task (debounced)');
-      }
-      finishTimer = null;
-    }, 3000); // 3 秒内没有新文本才 finish，给 LLM 流式输出留足时间
+    // 不做任何事，等前端发 { action: 'finish' }
   }
 
   /**

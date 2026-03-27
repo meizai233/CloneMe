@@ -58,18 +58,31 @@ export class TTSClient {
       };
 
       this.ws.onmessage = (event) => {
-        if (typeof event.data === "string") {
-          // JSON 控制消息
-          try {
-            const msg = JSON.parse(event.data);
-            if (msg.type === "connected") return;
-          } catch {
-            // 忽略
+        const data = event.data;
+
+        // binaryType=arraybuffer 时，所有消息都是 ArrayBuffer
+        if (data instanceof ArrayBuffer) {
+          // 尝试判断是 JSON 还是音频：检查前几个字节是否是 '{'
+          const firstByte = new Uint8Array(data)[0];
+          if (firstByte === 123) { // '{' = 123
+            // JSON 控制消息
+            try {
+              const text = new TextDecoder().decode(data);
+              const msg = JSON.parse(text);
+              if (msg.type === "connected") return;
+            } catch {
+              // 解析失败当音频处理
+            }
           }
-        } else {
-          // 二进制音频数据
-          this.audioQueue.push(event.data as ArrayBuffer);
+          // 音频数据
+          this.audioQueue.push(data);
           this.playNext();
+        } else if (typeof data === "string") {
+          // string 类型的 JSON 消息
+          try {
+            const msg = JSON.parse(data);
+            if (msg.type === "connected") return;
+          } catch { /* 忽略 */ }
         }
       };
 
