@@ -18,6 +18,7 @@ export interface Live2DDriver {
   init(canvasId?: string): Promise<void>;
   setEmotion(emotion: AvatarEmotion): void;
   setSpeaking(speaking: boolean): void;
+  setMouthOpen(value: number): void;
   playLipSync(cues: number[]): () => void;
   destroy(): void;
 }
@@ -70,6 +71,7 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
   let timer: ReturnType<typeof setInterval> | null = null;
   let idleTimer: ReturnType<typeof setInterval> | null = null;
   let motionTimer: ReturnType<typeof setInterval> | null = null;
+  let speakingMotionTimer: ReturnType<typeof setInterval> | null = null;
   let onResize: (() => void) | null = null;
   let baseTransform = { x: 0, y: 0, scale: 1 };
   let initToken = 0;
@@ -105,6 +107,26 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
       clearInterval(motionTimer);
       motionTimer = null;
     }
+  };
+
+  const stopSpeakingMotion = () => {
+    if (speakingMotionTimer) {
+      clearInterval(speakingMotionTimer);
+      speakingMotionTimer = null;
+    }
+  };
+
+  const startSpeakingMotion = () => {
+    stopSpeakingMotion();
+    const playMotion = (index: number) => {
+      (live2dModel as unknown as { motion?: (group: string, index: number) => Promise<unknown> | unknown })
+        .motion?.("", index);
+    };
+    playMotion(0);
+    speakingMotionTimer = setInterval(() => {
+      const motionIndex = Math.floor(Math.random() * 6);
+      playMotion(motionIndex);
+    }, 2200);
   };
 
   const startIdleMotion = () => {
@@ -242,6 +264,7 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
   };
 
   const cleanupRuntime = () => {
+    stopSpeakingMotion();
     stopIdleMotion();
     stopLipSync();
     if (onResize && typeof window !== "undefined") {
@@ -358,9 +381,19 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
     setSpeaking(speaking) {
       state.speaking = speaking;
       if (!speaking) {
+        stopSpeakingMotion();
+        startIdleMotion();
         stopLipSync();
+        emit();
         return;
       }
+      stopIdleMotion();
+      startSpeakingMotion();
+      emit();
+    },
+    setMouthOpen(value) {
+      state.mouthOpen = Math.min(1, Math.max(0, value));
+      applyMouthOpenToModel(state.mouthOpen);
       emit();
     },
     playLipSync(cues) {
