@@ -12,6 +12,7 @@ import { createASRConnection } from './services/asr.js';
 
 // HTTP 路由
 import chatRouter from './routes/chat.js';
+import { setKnowledgeContext } from './routes/chat.js';
 import imageRouter from './routes/image.js';
 import videoRouter from './routes/video.js';
 import embeddingRouter from './routes/embedding.js';
@@ -31,6 +32,16 @@ app.use('/api/voice', voiceCloneRouter);
 // 健康检查
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', service: 'clone-me-server' });
+});
+
+// 分身初始化（注入知识库）
+app.post('/api/avatar/init', (req, res) => {
+  const { creatorName = 'CloneMe 博主', domain = '技术', docs = [] } = req.body;
+  setKnowledgeContext(docs);
+  res.json({
+    message: 'avatar initialized',
+    profile: { creatorName, domain, docCount: docs.length },
+  });
 });
 
 // 创建 HTTP 服务器
