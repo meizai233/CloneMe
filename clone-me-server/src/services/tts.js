@@ -1,32 +1,66 @@
 /**
- * TTS 语音合成服务 - WebSocket 代理
- * 前端通过后端 WebSocket 中转，避免暴露 API Key
+ * TTS 语音合成服务 - CosyVoice (DashScope WebSocket)
+ * 支持克隆声音合成
  */
 import WebSocket from 'ws';
-import { TTS_WS_URL, API_KEYS, MODELS } from '../config.js';
+import { API_KEYS } from '../config.js';
+
+const DASHSCOPE_WS_URL = 'wss://dashscope.aliyuncs.com/api-ws/v1/inference';
 
 /**
- * 创建 TTS WebSocket 连接（供路由层使用）
- * @param {string} voice - 音色名称
- * @returns {WebSocket} - 上游 TTS WebSocket 连接
+ * 创建 CosyVoice TTS 连接
+ * @returns {{ ws: WebSocket, taskId: string }}
  */
-export function createTTSConnection(voice = 'cherry') {
-  const ws = new WebSocket(TTS_WS_URL, {
+export function createTTSConnection() {
+  const ws = new WebSocket(DASHSCOPE_WS_URL, {
     headers: {
-      'Authorization': `Bearer ${API_KEYS.tts}`,
-      'modelName': MODELS.tts,
+      'Authorization': `Bearer ${API_KEYS.video}`, // 阿里百炼 key
     },
   });
-  return ws;
+  const taskId = 'tts-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+  return { ws, taskId };
 }
 
 /**
- * 发送文本到 TTS 并获取音频
- * @param {WebSocket} ws - TTS WebSocket 连接
- * @param {string} text - 要合成的文本
- * @param {object} options - 可选参数
+ * 启动 TTS 任务（发送 run-task 指令）
  */
-export function sendTTSText(ws, text, options = {}) {
-  const { responseFormat = 'mp3', voice = 'cherry' } = options;
-  ws.send(JSON.stringify({ inputText: text, responseFormat, voice }));
+export function startTTSTask(ws, taskId, voice = 'cosyvoice-v2-cloneme-dd0db46b2684401c8e555db6cf04e424') {
+  // 从 voiceId 中提取模型名（如 cosyvoice-v2）
+  const model = voice.match(/^(cosyvoice-[^-]+-?[^-]*)/)?.[0] || 'cosyvoice-v2';
+
+  ws.send(JSON.stringify({
+    header: {
+      action: 'run-task',
+      task_id: taskId,
+      streaming: 'duplex',
+    },
+    payload: {
+      task_group: 'audio',
+      task: 'tts',
+      function: 'SpeechSynthesizer',
+      model,
+      parameters: { voice, format: 'mp3', sample_rate: 22050 },
+      input: {},
+    },
+  }));
+}
+
+/**
+ * 发送文本到 TTS
+ */
+export function sendTTSText(ws, taskId, text) {
+  ws.send(JSON.stringify({
+    header: { action: 'continue-task', task_id: taskId, streaming: 'duplex' },
+    payload: { input: { text } },
+  }));
+}
+
+/**
+ * 结束 TTS 任务
+ */
+export function finishTTSTask(ws, taskId) {
+  ws.send(JSON.stringify({
+    header: { action: 'finish-task', task_id: taskId, streaming: 'duplex' },
+    payload: { input: {} },
+  }));
 }

@@ -7,7 +7,7 @@ import cors from 'cors';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import { PORT } from './config.js';
-import { createTTSConnection, sendTTSText } from './services/tts.js';
+import { createTTSConnection, startTTSTask, sendTTSText, finishTTSTask } from './services/tts.js';
 import { createASRConnection } from './services/asr.js';
 
 // HTTP 路由
@@ -52,37 +52,88 @@ const server = createServer(app);
 // WebSocket 服务器 - TTS 代理（路径: /ws/tts）
 const ttsWss = new WebSocketServer({ noServer: true });
 ttsWss.on('connection', (clientWs) => {
-  // 为每个客户端创建到上游 TTS 的连接
-  const upstream = createTTSConnection();
+  let upstream = null;
+  let taskId = null;
+  let taskStarted = false;
 
-  upstream.on('open', () => {
-    clientWs.send(JSON.stringify({ type: 'connected' }));
-  });
-
-  // 上游音频数据 → 客户端
-  upstream.on('message', (data) => {
-    if (clientWs.readyState === 1) {
-      clientWs.send(data);
-    }
-  });
-
-  // 客户端文本 → 上游 TTS
   clientWs.on('message', (data) => {
     try {
       const msg = JSON.parse(data.toString());
-      if (msg.text && upstream.readyState === 1) {
-        sendTTSText(upstream, msg.text, { voice: msg.voice });
+
+      if (msg.text) {
+        const voice = msg.voice || 'cherry';
+
+        if (!upstream || upstream.readyState !== 1) {
+          // 创建新连接
+          const conn = createTTSConnection();
+          upstream = conn.ws;
+          taskId = conn.taskId;
+          taskStarted = false;
+
+          upstream.on('open', () => {
+            console.log('[TTS] Connected to DashScope, starting task');
+            startTTSTask(upstream, taskId, voice);
+          });
+
+          upstream.on('message', (upData) => {
+            if (Buffer.isBuffer(upData)) {
+              const str = upData.toString('utf8');
+              try {
+                const upMsg = JSON.parse(str);
+                if (upMsg.header?.event === 'task-started') {
+                  taskStarted = true;
+                  clientWs.send(JSON.stringify({ type: 'connected' }));
+                  // 发送积压的文本
+                  sendTTSText(upstream, taskId, msg.text);
+                } else if (upMsg.header?.event === 'task-finished') {
+                  // 任务结束，关闭上游连接以便下次创建新的
+                  upstream.close();
+                  upstream = null;
+                  taskStarted = false;
+                }
+                // 其他 JSON 消息忽略
+              } catch {
+                // 二进制音频数据 → 转发给客户端
+                if (clientWs.readyState === 1) {
+                  clientWs.send(upData);
+                }
+              }
+            }
+          });
+
+          upstream.on('error', (err) => {
+            console.error('[TTS] Upstream error:', err.message);
+            upstream = null;
+            taskStarted = false;
+          });
+
+          upstream.on('close', () => {
+            upstream = null;
+            taskStarted = false;
+          });
+        } else if (taskStarted) {
+          // 连接已建立，直接发送文本
+          sendTTSText(upstream, taskId, msg.text);
+        }
+      }
+
+      if (msg.action === 'finish' && upstream && taskStarted) {
+        finishTTSTask(upstream, taskId);
       }
     } catch {
       // 非 JSON 数据忽略
     }
   });
 
-  clientWs.on('close', () => upstream.close());
-  upstream.on('close', () => {
-    if (clientWs.readyState === 1) clientWs.close();
+  clientWs.on('close', () => {
+    if (upstream && upstream.readyState === 1) {
+      if (taskStarted) {
+        try { finishTTSTask(upstream, taskId); } catch { /* 忽略 */ }
+      }
+      upstream.close();
+    }
+    upstream = null;
   });
-  upstream.on('error', () => upstream.close());
 });
 
 // WebSocket 服务器 - ASR 代理（路径: /ws/asr）
