@@ -223,6 +223,15 @@ button:disabled {
     linear-gradient(180deg, rgba(8, 14, 36, 0.52), rgba(8, 14, 36, 0.84));
 }
 
+.avatar-stage-live2d {
+  background-image:
+    linear-gradient(180deg, rgba(8, 14, 36, 0.2), rgba(8, 14, 36, 0.48)),
+    url("/images/live2d/haluo-hero-banner.png");
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
 .avatar-stage::before {
   content: "";
   position: absolute;

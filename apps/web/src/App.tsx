@@ -39,7 +39,7 @@ function Avatar2D(props: {
 
   return (
     <div className={`avatar-card ${emotionClass}`}>
-      <div className="avatar-stage">
+      <div className={`avatar-stage ${usingLive2D ? "avatar-stage-live2d" : "avatar-stage-loader"}`}>
         <canvas id="avatar-canvas" className={`avatar-canvas ${usingLive2D ? "visible" : ""}`} />
 
         {!usingLive2D && (
