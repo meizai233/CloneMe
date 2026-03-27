@@ -18,10 +18,6 @@ import videoRouter from './routes/video.js';
 import embeddingRouter from './routes/embedding.js';
 import voiceCloneRouter from './routes/voice-clone.js';
 import uploadRouter from './routes/upload.js';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 app.use(cors());
@@ -34,9 +30,6 @@ app.use('/api/video', videoRouter);
 app.use('/api/embedding', embeddingRouter);
 app.use('/api/voice', voiceCloneRouter);
 app.use('/api/upload', uploadRouter);
-
-// 静态文件服务（上传的音频文件）
-app.use('/uploads', express.static(join(__dirname, '../uploads')));
 
 // 健康检查
 app.get('/api/health', (req, res) => {
