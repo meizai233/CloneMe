@@ -2,6 +2,28 @@ import type { AvatarEmotion } from "../avatar/live2dAdapter";
 
 export type PersonaMode = "teacher" | "friend" | "support";
 
+/** 后端角色信息 */
+export interface PersonaInfo {
+  key: string;
+  name: string;
+  description: string;
+}
+
+export interface PersonaListResponse {
+  personas: PersonaInfo[];
+  defaultPersona: string;
+}
+
+export interface SmartChatResponse {
+  reply: string;
+  references: string[];
+  emotion: string;
+  audioUrl: string;
+  phonemeCues: number[];
+  sessionId: string;
+  persona: string;
+}
+
 interface InitAvatarRequest {
   creatorName: string;
   domain: string;
@@ -140,6 +162,7 @@ export async function chatWithAvatar(payload: {
   userQuestion: string;
   mode: PersonaMode;
   voiceId?: string;
+  userId?: string;
   onDelta?: (fullText: string) => void;
   onDeltaIncrement?: (increment: string) => void;
   onThinking?: () => void;
@@ -264,4 +287,23 @@ export async function uploadAudio(audioData: string, filename?: string): Promise
  */
 export function getUploadUrl(path: string): string {
   return joinUrl(API_BASE_URL, path);
+}
+
+/**
+ * 获取后端可用角色列表
+ */
+export async function fetchPersonas(): Promise<PersonaListResponse> {
+  return requestWithoutBody<PersonaListResponse>("/api/personas", "GET");
+}
+
+/**
+ * 智能对话 - 使用角色系统提示词 + Memory + RAG
+ */
+export async function smartChat(payload: {
+  userQuestion: string;
+  persona?: string;
+  sessionId?: string;
+  userId?: string;
+}): Promise<SmartChatResponse> {
+  return requestJson<SmartChatResponse, typeof payload>("/api/chat/smart", payload);
 }

@@ -16,11 +16,6 @@ async function postChatCompletions(body) {
     });
 
   let res = await request(body);
-  // 某些平台不支持 enable_thinking 参数，自动降级重试一次。
-  if (!res.ok && body.enable_thinking === false && res.status === 400) {
-    const { enable_thinking, ...fallbackBody } = body;
-    res = await request(fallbackBody);
-  }
   return res;
 }
 
@@ -31,14 +26,15 @@ async function postChatCompletions(body) {
  * @returns {Promise<object>} - LLM 响应
  */
 export async function chat(messages, options = {}) {
-  const { model = MODELS.chat, temperature = 0.2, max_tokens = 100 } = options;
+  const { model = MODELS.chat, temperature = 0.2, max_tokens = 1024 } = options;
 
-  const body = { model, messages, temperature, max_tokens, stream: false, enable_thinking: false };
-  if (max_tokens) body.max_tokens = max_tokens;
+  const body = { model, messages, temperature, max_completion_tokens: max_tokens, stream: false };
 
   const res = await postChatCompletions(body);
 
   if (!res.ok) {
+    const errBody = await res.text().catch(() => '');
+    console.error('[LLM] 请求失败, status:', res.status, 'body:', errBody.slice(0, 500));
     throw new Error(`LLM 请求失败: ${res.status} ${res.statusText}`);
   }
   return res.json();
@@ -51,9 +47,8 @@ export async function chat(messages, options = {}) {
  * @returns {Promise<Response>} - 原始 fetch Response（流式）
  */
 export async function chatStream(messages, options = {}) {
-  const { model = MODELS.chat, temperature = 0.2, max_tokens = 100 } = options;
-  const body = { model, messages, temperature, max_tokens, stream: true, enable_thinking: false };
-  if (max_tokens) body.max_tokens = max_tokens;
+  const { model = MODELS.chat, temperature = 0.2, max_tokens = 1024 } = options;
+  const body = { model, messages, temperature, max_completion_tokens: max_tokens, stream: true };
 
   const res = await postChatCompletions(body);
 

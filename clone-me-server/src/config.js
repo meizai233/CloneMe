@@ -24,7 +24,7 @@ export const API_KEYS = {
 
 // 默认模型选择
 export const MODELS = {
-  chat: 'Qwen3.5-plus',
+  chat: 'GPT-5.4',
   embedding: 'Qwen-text-embedding-v4',
   imageGen: 'Doubao-Seedream-5.0-lite',
   tts: 'DouBao-seed-tts-1.0',

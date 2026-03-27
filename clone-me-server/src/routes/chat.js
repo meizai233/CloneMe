@@ -5,6 +5,7 @@
  */
 import { Router } from 'express';
 import { chat, chatStream } from '../services/llm.js';
+import { appendRound } from '../services/memory.js';
 
 const router = Router();
 
@@ -48,7 +49,7 @@ function generatePhonemeCues(text) {
 // 对话（流式 SSE，边生成边返回）
 router.post('/', async (req, res) => {
   try {
-    const { userQuestion, mode = 'teacher', voiceId } = req.body;
+    const { userQuestion, mode = 'teacher', voiceId, userId } = req.body;
     if (!userQuestion) {
       return res.status(400).json({ message: 'userQuestion 不能为空' });
     }
@@ -161,6 +162,12 @@ router.post('/', async (req, res) => {
       : [];
 
     res.write(`data: ${JSON.stringify({ type: 'done', reply: fullReply, emotion, phonemeCues, references, audioUrl: '' })}\n\n`);
+
+    // 异步写入记忆库（不阻塞响应）
+    if (userId && fullReply) {
+      appendRound(userId, userQuestion, fullReply, userId);
+    }
+
     res.end();
   } catch (err) {
     // 如果还没开始写 SSE，返回 JSON 错误

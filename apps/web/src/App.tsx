@@ -11,23 +11,16 @@ import {
   initAvatarProfile,
   uploadAudio,
   getUploadUrl,
-  type PersonaMode
+  fetchPersonas,
+  smartChat,
+  type PersonaMode,
+  type PersonaInfo
 } from "./services/api";
 import { TTSClient, SentenceBuffer } from "./services/ttsClient";
 
-const modeLabels: Record<PersonaMode, string> = {
-  teacher: "老师模式",
-  friend: "朋友模式",
-  support: "客服模式"
-};
 
-function buildOfflineReply(question: string, mode: PersonaMode): string {
-  const modePrefix: Record<PersonaMode, string> = {
-    teacher: "老师模式建议",
-    friend: "朋友模式建议",
-    support: "客服模式建议"
-  };
-  return `${modePrefix[mode]}：当前网络异常，先给你一版离线演示回答。关于“${question}”，建议先拆成学习目标、周计划和复盘机制三步推进。`;
+function buildOfflineReply(question: string): string {
+  return "当前网络异常，建议联系人工客服 400-091-0857。问题：" + question;
 }
 
 function Avatar2D(props: {
@@ -85,7 +78,9 @@ export default function App() {
   const typingQueueRef = useRef("");
   const typingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const [mode, setMode] = useState<PersonaMode>("teacher");
+  const [personas, setPersonas] = useState<PersonaInfo[]>([]);
+  const [selectedPersona, setSelectedPersona] = useState<string>("general");
+  const [sessionId] = useState<string>(() => `session_${Date.now()}`);
   const [docsInput, setDocsInput] = useState(
     "React 性能优化优先做拆分、memo、减少无意义重渲染。\nTypeScript 项目中优先给 API 返回体建立显式类型。"
   );
@@ -121,6 +116,9 @@ export default function App() {
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
   const [chatPhase, setChatPhase] = useState<"idle" | "thinking" | "typing">("idle");
   const [thinkingDots, setThinkingDots] = useState("");
+
+  // 每次页面加载生成新的 userId，刷新页面后自动更换
+  const [userId] = useState(() => `user_${crypto.randomUUID()}`);
 
   const loading = initLoading || chatLoading || voiceCloneLoading;
   const statusLabel = initLoading ? "初始化中" : chatLoading ? "思考中" : isSpeaking ? "播报中" : "待机";
@@ -182,6 +180,18 @@ export default function App() {
       typingQueueRef.current = queue.slice(2);
       setAnswer((prev) => prev + segment);
     }, 22);
+  }, []);
+
+  // 启动时从后端加载角色列表
+  useEffect(() => {
+    fetchPersonas()
+      .then((data) => {
+        setPersonas(data.personas);
+        setSelectedPersona(data.defaultPersona);
+      })
+      .catch(() => {
+        // 加载失败使用默认空列表
+      });
   }, []);
 
   useEffect(() => {
@@ -453,44 +463,35 @@ export default function App() {
       });
       sentenceBufferRef.current = sentenceBuffer;
 
-      const data = await chatWithAvatar({
+      const data = await smartChat({
         userQuestion: safeQuestion,
-        mode,
-        voiceId: voiceId ?? undefined,
-        onThinking: () => {
-          setChatPhase("thinking");
-        },
-        onDelta: () => {
-          setChatPhase("typing");
-        },
-        onDeltaIncrement: (increment) => {
-          // 增量文本送入句子缓冲器，凑满一句就发 TTS
-          setChatPhase("typing");
-          pushTypewriterText(increment);
-          sentenceBuffer.push(increment);
-        },
+        persona: selectedPersona,
+        sessionId,
+        userId,
       });
 
-      // 刷新句子缓冲器中剩余的文本
-      sentenceBuffer.flush();
-      sentenceBufferRef.current = null;
+      // smartChat 是非流式，直接设置结果
       stopTypewriter();
 
       setAnswer(data.reply);
       setReferences(data.references);
-      adapterRef.current?.setEmotion(data.emotion);
-      setVoiceLatency(data.latency ?? null);
+      adapterRef.current?.setEmotion(data.emotion as AvatarEmotion);
 
-      // 音频通过 TTS WebSocket 通道播放，不再依赖 audioUrl
-      // 如果 TTS WebSocket 未连接，使用 fallback 口型动画
-      if (!ttsClientRef.current || !voiceId) {
+      if (data.audioUrl) {
+        try {
+          await playAnswerAudio(data.audioUrl, data.phonemeCues);
+        } catch {
+          setErrorMessage("语音播放失败，已回退到离线口型演示。");
+          playFallbackLipSync(data.phonemeCues);
+        }
+      } else {
         playFallbackLipSync(data.phonemeCues);
       }
     } catch (error) {
       stopTypewriter();
       const message = error instanceof Error ? error.message : String(error);
       setErrorMessage(`${message}，已启用离线演示回答。`);
-      setAnswer(buildOfflineReply(safeQuestion, mode));
+      setAnswer(buildOfflineReply(safeQuestion));
       setReferences(["离线演示兜底回答"]);
       adapterRef.current?.setEmotion("thinking");
       playFallbackLipSync([0.2, 0.7, 0.35, 0.8, 0.25, 0.65]);
@@ -501,7 +502,7 @@ export default function App() {
       setChatPhase("idle");
       setChatLoading(false);
     }
-  }, [cleanupPlayback, mode, playAnswerAudio, playFallbackLipSync, pushTypewriterText, question, stopTypewriter, voiceId]);
+  }, [cleanupPlayback, selectedPersona, sessionId, userId, playAnswerAudio, playFallbackLipSync, pushTypewriterText, question, stopTypewriter, voiceId]);
 
   async function onAsk(event: FormEvent) {
     event.preventDefault();
@@ -541,16 +542,18 @@ export default function App() {
           </button>
 
           <div className="mode-row">
-            {(Object.keys(modeLabels) as PersonaMode[]).map((item) => (
+            {personas.map((p) => (
               <button
-                key={item}
-                className={item === mode ? "active" : ""}
-                onClick={() => setMode(item)}
+                key={p.key}
+                className={p.key === selectedPersona ? "active" : ""}
+                onClick={() => setSelectedPersona(p.key)}
                 disabled={loading}
+                title={p.description}
               >
-                {modeLabels[item]}
+                {p.name}
               </button>
             ))}
+            {personas.length === 0 && <span>角色加载中...</span>}
           </div>
 
           <div className="voice-clone-box">

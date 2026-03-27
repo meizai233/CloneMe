@@ -18,13 +18,20 @@ import videoRouter from './routes/video.js';
 import embeddingRouter from './routes/embedding.js';
 import voiceCloneRouter from './routes/voice-clone.js';
 import uploadRouter from './routes/upload.js';
+import smartChatRouter from './routes/smart-chat.js';
+import { initPersonas } from './services/persona.js';
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
+// 初始化角色配置
+initPersonas();
+
 // 注册 HTTP 路由
 app.use('/api/chat', chatRouter);
+app.use('/api/chat', smartChatRouter);
+app.use('/api', smartChatRouter);
 app.use('/api/image', imageRouter);
 app.use('/api/video', videoRouter);
 app.use('/api/embedding', embeddingRouter);
@@ -206,6 +213,10 @@ server.listen(PORT, () => {
   console.log(`📡 API 路由:`);
   console.log(`   POST /api/chat          - 对话`);
   console.log(`   POST /api/chat/stream    - 流式对话（SSE）`);
+  console.log(`   POST /api/chat/smart     - 智能对话（角色+Memory+RAG）`);
+  console.log(`   DEL  /api/chat/smart/session/:id - 清除会话`);
+  console.log(`   GET  /api/personas       - 获取角色列表`);
+  console.log(`   POST /api/personas       - 新增/更新角色`);
   console.log(`   POST /api/image/generate - 图片生成`);
   console.log(`   POST /api/video/create   - 视频生成`);
   console.log(`   GET  /api/video/task/:id - 查询视频任务`);
