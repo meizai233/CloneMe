@@ -5,6 +5,14 @@
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3001";
 const WS_URL = API_BASE_URL.replace(/^http/, "ws") + "/ws/tts";
+const readEnvNumber = (raw: unknown, fallback: number, min: number, max: number) => {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+};
+const MOUTH_GAIN = readEnvNumber(import.meta.env.VITE_LIVE2D_MOUTH_GAIN, 1.4, 0.2, 4);
+const MOUTH_NOISE_FLOOR = readEnvNumber(import.meta.env.VITE_LIVE2D_MOUTH_NOISE_FLOOR, 0.02, 0, 0.2);
+const MOUTH_SMOOTHING = readEnvNumber(import.meta.env.VITE_LIVE2D_MOUTH_SMOOTHING, 0.75, 0, 0.95);
 
 type OnSpeakingChange = (speaking: boolean) => void;
 type OnMouthOpen = (value: number) => void;
@@ -20,8 +28,11 @@ export class TTSClient {
   private audioQueue: ArrayBuffer[] = [];
   private isPlaying = false;
   private audioContext: AudioContext | null = null;
+  private analyser: AnalyserNode | null = null;
+  private analyserData: Uint8Array | null = null;
   private currentSource: AudioBufferSourceNode | null = null;
   private mouthAnimTimer: ReturnType<typeof setInterval> | null = null;
+  private smoothedMouthOpen = 0;
   private voiceId?: string;
   private onSpeakingChange?: OnSpeakingChange;
   private onMouthOpen?: OnMouthOpen;
@@ -137,11 +148,19 @@ export class TTSClient {
       if (!this.audioContext) {
         this.audioContext = new AudioContext();
       }
+      if (this.audioContext.state === "suspended") {
+        await this.audioContext.resume();
+      }
+      this.setupAnalyser();
 
       const audioBuffer = await this.audioContext.decodeAudioData(audioData.slice(0));
       const source = this.audioContext.createBufferSource();
       source.buffer = audioBuffer;
-      source.connect(this.audioContext.destination);
+      if (this.analyser) {
+        source.connect(this.analyser);
+      } else {
+        source.connect(this.audioContext.destination);
+      }
       this.currentSource = source;
 
       source.onended = () => {
@@ -172,10 +191,43 @@ export class TTSClient {
   }
 
   /**
-   * 启动口型动画（模拟说话时嘴巴开合）
+   * 准备音频分析节点，用于实时口型
+   */
+  private setupAnalyser() {
+    if (!this.audioContext || this.analyser) return;
+    const analyser = this.audioContext.createAnalyser();
+    analyser.fftSize = 1024;
+    analyser.smoothingTimeConstant = 0.5;
+    analyser.connect(this.audioContext.destination);
+    this.analyser = analyser;
+    this.analyserData = new Uint8Array(analyser.fftSize);
+  }
+
+  /**
+   * 启动口型动画（优先实时振幅驱动，失败时回退模拟）
    */
   private startMouthAnimation() {
     this.stopMouthAnimation();
+    this.smoothedMouthOpen = 0;
+    if (this.analyser && this.analyserData) {
+      this.mouthAnimTimer = setInterval(() => {
+        if (!this.analyser || !this.analyserData) return;
+        this.analyser.getByteTimeDomainData(this.analyserData);
+        let power = 0;
+        for (const sample of this.analyserData) {
+          const centered = (sample - 128) / 128;
+          power += centered * centered;
+        }
+        const rms = Math.sqrt(power / this.analyserData.length);
+        const boosted = Math.max(0, rms - MOUTH_NOISE_FLOOR) * MOUTH_GAIN;
+        const target = Math.min(1, boosted);
+        this.smoothedMouthOpen =
+          this.smoothedMouthOpen * MOUTH_SMOOTHING + target * (1 - MOUTH_SMOOTHING);
+        this.onMouthOpen?.(this.smoothedMouthOpen);
+      }, 33);
+      return;
+    }
+
     let t = 0;
     this.mouthAnimTimer = setInterval(() => {
       t += 1;
@@ -224,6 +276,9 @@ export class TTSClient {
       this.audioContext.close();
       this.audioContext = null;
     }
+    this.analyser = null;
+    this.analyserData = null;
+    this.smoothedMouthOpen = 0;
   }
 
   /**

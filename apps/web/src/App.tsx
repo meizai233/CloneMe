@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import {
   createLive2DAdapter,
   type AvatarEmotion,
@@ -29,23 +29,9 @@ const INTERNAL_KNOWLEDGE_DOCS = [
   "TypeScript 项目中优先给 API 返回体建立显式类型。"
 ];
 
-const LIVE2D_MODEL_OPTIONS = [
-  {
-    key: "haru_greeter_pro_jp",
-    label: "Haru（默认）",
-    modelUrl: "/models/haru_greeter_pro_jp/runtime/haru_greeter_t05.model3.json"
-  },
-  {
-    key: "ren_pro_en",
-    label: "Ren",
-    modelUrl: "/models/ren_pro_en/runtime/ren.model3.json"
-  },
-  {
-    key: "natori_pro_zh",
-    label: "Natori（dist）",
-    modelUrl: "/dist/models/natori_pro_zh/runtime/natori_pro_t06.model3.json"
-  }
-] as const;
+const HARU_MODEL_URL = "/models/haru_greeter_pro_jp/runtime/haru_greeter_t05.model3.json";
+const NATORI_MODEL_URL = "/models/natori_pro_zh/runtime/natori_pro_t06.model3.json";
+const PERSONA_STORAGE_KEY = "cloneme.selectedPersona";
 
 function Avatar2D(props: {
   speaking: boolean;
@@ -54,8 +40,9 @@ function Avatar2D(props: {
   ready: boolean;
   runtime: AvatarRuntime;
   runtimeError: string | null;
+  canvasRef: RefObject<HTMLCanvasElement | null>;
 }) {
-  const { speaking, emotion, mouthOpen, ready, runtime, runtimeError } = props;
+  const { speaking, emotion, mouthOpen, ready, runtime, runtimeError, canvasRef } = props;
   const emotionClass = `emotion-${emotion}`;
   const usingLive2D = runtime === "live2d";
   const showLoader = !ready;
@@ -106,7 +93,7 @@ function Avatar2D(props: {
           {previewFullscreen ? "退出全屏" : "全屏预览"}
         </button>
 
-        <canvas id="avatar-canvas" className={`avatar-canvas ${usingLive2D ? "visible" : ""}`} />
+        <canvas ref={canvasRef} id="avatar-canvas" className={`avatar-canvas ${usingLive2D ? "visible" : ""}`} />
 
         {!usingLive2D && (
           <div className={`avatar-loader-shell ${speaking ? "is-speaking" : ""}`}>
@@ -138,6 +125,7 @@ function Avatar2D(props: {
 
 export default function App() {
   const adapterRef = useRef<Live2DDriver | null>(null);
+  const avatarCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const stopLipSyncRef = useRef<(() => void) | null>(null);
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -150,8 +138,14 @@ export default function App() {
   const lastGestureAtRef = useRef(0);
 
   const [personas, setPersonas] = useState<PersonaInfo[]>([]);
-  const [selectedPersona, setSelectedPersona] = useState<string>("general");
-  const [selectedLive2DModel, setSelectedLive2DModel] = useState<string>(LIVE2D_MODEL_OPTIONS[0].modelUrl);
+  const [selectedPersona, setSelectedPersona] = useState<string>(() => {
+    if (typeof window === "undefined") return "general";
+    try {
+      return window.localStorage.getItem(PERSONA_STORAGE_KEY) ?? "general";
+    } catch {
+      return "general";
+    }
+  });
   const [sessionId] = useState<string>(() => `session_${Date.now()}`);
   const [question, setQuestion] = useState("怎么系统学习前端工程化？");
   const [answer, setAnswer] = useState("欢迎使用 CloneMe。先上传内容，再开始提问。");
@@ -313,12 +307,31 @@ export default function App() {
     fetchPersonas()
       .then((data) => {
         setPersonas(data.personas);
-        setSelectedPersona(data.defaultPersona);
+        const cachedPersona = (() => {
+          try {
+            return window.localStorage.getItem(PERSONA_STORAGE_KEY);
+          } catch {
+            return null;
+          }
+        })();
+        const hasCachedPersona = cachedPersona
+          ? data.personas.some((persona) => persona.key === cachedPersona)
+          : false;
+        setSelectedPersona(hasCachedPersona ? (cachedPersona as string) : data.defaultPersona);
       })
       .catch(() => {
         // 加载失败使用默认空列表
       });
   }, []);
+
+  useEffect(() => {
+    if (!selectedPersona) return;
+    try {
+      window.localStorage.setItem(PERSONA_STORAGE_KEY, selectedPersona);
+    } catch {
+      // localStorage 不可用时忽略，不影响页面交互。
+    }
+  }, [selectedPersona]);
 
   const resolveIntroMode = useCallback(
     (personaKey: string): PersonaMode | null => {
@@ -342,6 +355,63 @@ export default function App() {
     },
     [personas]
   );
+
+  const resolveLive2DModelUrl = useCallback(
+    (personaKey: string): string => {
+      const matchedPersona = personas.find((item) => item.key === personaKey);
+      const personaText = `${personaKey} ${matchedPersona?.name ?? ""}`.toLowerCase();
+
+      if (personaKey === "general" || personaText.includes("通用") || personaText.includes("general")) {
+        return NATORI_MODEL_URL;
+      }
+
+      if (
+        personaKey === "pre_sales" ||
+        personaKey === "after_sales" ||
+        personaText.includes("售前") ||
+        personaText.includes("售后") ||
+        personaText.includes("support") ||
+        personaText.includes("sales")
+      ) {
+        return HARU_MODEL_URL;
+      }
+
+      return HARU_MODEL_URL;
+    },
+    [personas]
+  );
+
+  const resolveRenderableModelUrl = useCallback(async (preferredModelUrl: string): Promise<string> => {
+    if (preferredModelUrl !== NATORI_MODEL_URL || typeof window === "undefined") {
+      return preferredModelUrl;
+    }
+
+    try {
+      const modelUrl = new URL(preferredModelUrl, window.location.origin);
+      const modelResponse = await fetch(modelUrl.toString(), { cache: "no-store" });
+      if (!modelResponse.ok) {
+        return HARU_MODEL_URL;
+      }
+
+      const modelJson = (await modelResponse.json()) as {
+        FileReferences?: { Moc?: string };
+      };
+      const mocRelativePath = modelJson.FileReferences?.Moc;
+      if (!mocRelativePath) {
+        return HARU_MODEL_URL;
+      }
+
+      const mocUrl = new URL(mocRelativePath, modelUrl);
+      const mocResponse = await fetch(mocUrl.toString(), { cache: "no-store" });
+      if (!mocResponse.ok) {
+        return HARU_MODEL_URL;
+      }
+
+      return preferredModelUrl;
+    } catch {
+      return HARU_MODEL_URL;
+    }
+  }, []);
 
   useEffect(() => {
     const introMode = resolveIntroMode(selectedPersona);
@@ -374,20 +444,42 @@ export default function App() {
     });
 
     adapterRef.current = adapter;
-    // 延迟初始化，确保 canvas DOM 已完全挂载
-    const initTimer = setTimeout(() => {
-      void adapter.init("avatar-canvas", selectedLive2DModel);
-    }, 100);
 
     return () => {
-      clearTimeout(initTimer);
       stopModeIntro();
       cleanupPlayback();
       stopTypewriter();
       adapter.destroy();
       adapterRef.current = null;
     };
-  }, [cleanupPlayback, selectedLive2DModel, stopModeIntro, stopTypewriter]);
+  }, [cleanupPlayback, stopModeIntro, stopTypewriter]);
+
+  useEffect(() => {
+    const adapter = adapterRef.current;
+    if (!adapter) return;
+    const modelUrl = resolveLive2DModelUrl(selectedPersona);
+    let cancelled = false;
+
+    // 角色切换时触发一次模型重载。
+    setAvatarReady(false);
+    setAvatarRuntimeError(null);
+    const initTimer = setTimeout(() => {
+      void (async () => {
+        await new Promise<void>((resolve) => {
+          requestAnimationFrame(() => resolve());
+        });
+        if (cancelled) return;
+        const renderableModelUrl = await resolveRenderableModelUrl(modelUrl);
+        if (cancelled) return;
+        await adapter.init(avatarCanvasRef.current ?? "avatar-canvas", renderableModelUrl);
+      })();
+    }, 100);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(initTimer);
+    };
+  }, [resolveLive2DModelUrl, resolveRenderableModelUrl, selectedPersona]);
 
   // 初始化 TTS 客户端
   useEffect(() => {
@@ -705,22 +797,6 @@ export default function App() {
         <div className="panel-main-content">
           <h1>CloneMe - 知识博主 AI 分身</h1>
           <p className="subtitle">聊天 + 语音驱动口型 + 2D 数字形象（最小可演示版）</p>
-
-          <label className="block model-select-row">
-            <span>Live2D 模型</span>
-            <select
-              value={selectedLive2DModel}
-              onChange={(e) => setSelectedLive2DModel(e.target.value)}
-              disabled={loading}
-            >
-              {LIVE2D_MODEL_OPTIONS.map((item) => (
-                <option key={item.key} value={item.modelUrl}>
-                  {item.label}
-                </option>
-              ))}
-            </select>
-          </label>
-
           <button onClick={initAvatar} disabled={loading}>
             {initLoading ? "初始化中..." : "1) 初始化分身"}
           </button>
@@ -728,7 +804,9 @@ export default function App() {
           <div className="question-guide-box">
             <h3>引导提问（预留）</h3>
             <p>这里会放常见问题引导，帮助用户快速开始提问。</p>
-            <p className="question-guide-placeholder">示例：如何开始 / 套餐怎么选 / 租车流程是什么（暂未开放）</p>
+            <p className="question-guide-placeholder">
+              示例：如何开始 / 套餐怎么选 / 租车流程是什么 / 我现在很生气，要投诉你们客服怎么处理（暂未开放）
+            </p>
           </div>
 
           <div className="mode-row">
@@ -856,12 +934,14 @@ export default function App() {
 
       <section className="panel panel-avatar panel-avatar-floating">
         <Avatar2D
+          key={selectedPersona}
           speaking={isSpeaking}
           emotion={emotion}
           mouthOpen={mouthOpen}
           ready={avatarReady}
           runtime={runtime}
           runtimeError={avatarRuntimeError}
+          canvasRef={avatarCanvasRef}
         />
         <div className="chat-dialog">
           <div className="chat-dialog-header">

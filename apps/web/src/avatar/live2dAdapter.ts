@@ -43,7 +43,7 @@ interface CreateLive2DAdapterOptions {
 }
 
 export interface Live2DDriver {
-  init(canvasId?: string): Promise<void>;
+  init(canvasTarget?: string | HTMLCanvasElement | null, modelUrlOverride?: string): Promise<void>;
   setEmotion(emotion: AvatarEmotion): void;
   setPose(pose: Partial<AvatarPose>): void;
   playGesture(gesture: AvatarGesture): void;
@@ -408,20 +408,39 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
   };
 
   return {
-    async init(canvasId) {
+    async init(canvasTarget, modelUrlOverride) {
       const token = ++initToken;
-      const canvas =
-        canvasId && typeof document !== "undefined"
-          ? (document.getElementById(canvasId) as HTMLCanvasElement | null)
-          : null;
+      let canvas: HTMLCanvasElement | null = null;
+      const canvasId = typeof canvasTarget === "string" ? canvasTarget : null;
+
+      if (canvasTarget instanceof HTMLCanvasElement) {
+        canvas = canvasTarget;
+      } else if (canvasId && typeof document !== "undefined") {
+        canvas = document.getElementById(canvasId) as HTMLCanvasElement | null;
+      }
+
+      // 在 dev/hot-reload 或复杂布局切换下，canvas 可能晚于 init 一个 tick 挂载；
+      // 这里做短暂重试，避免误判为 mock fallback。
+      if (!canvas && canvasId && typeof document !== "undefined") {
+        for (let attempt = 0; attempt < 20 && !canvas; attempt += 1) {
+          await new Promise<void>((resolve) => {
+            setTimeout(resolve, 50);
+          });
+          if (token !== initToken) {
+            return;
+          }
+          canvas = document.getElementById(canvasId) as HTMLCanvasElement | null;
+        }
+      }
 
       const modelUrl =
+        modelUrlOverride ??
         import.meta.env.VITE_LIVE2D_MODEL_URL ??
         "/models/haru_greeter_pro_jp/runtime/haru_greeter_t05.model3.json";
       if (!canvas || !modelUrl) {
         state.runtime = "mock";
         state.runtimeError = !canvas
-          ? "Canvas not found: avatar-canvas"
+          ? "Canvas not found"
           : "VITE_LIVE2D_MODEL_URL is empty";
         state.initialized = true;
         emit();
