@@ -72,7 +72,7 @@ export function appendRound(sessionId, userContent, assistantContent, userId) {
  * @param {string} assistantContent - 助手回复
  */
 async function saveToMemoryBank(userId, sessionId, userContent, assistantContent) {
-  const url = `${MEMORY_BANK_BASE_URL}/api/v1/memories/add`;
+  const url = `${MEMORY_BANK_BASE_URL}/api/v1/memories/add?sync=true`;
 
   const body = {
     userId,
@@ -160,6 +160,8 @@ export async function searchMemories(userId, options = {}) {
     body.sortDirection = options.sortDirection ?? 'DESC';
   }
 
+  console.log('[MemoryBank] 检索请求 body:', JSON.stringify(body).slice(0, 500));
+
   const res = await fetch(url, {
     method: 'POST',
     headers: {
@@ -198,7 +200,7 @@ export async function searchRelevantMemories(userId, query, topK = 5) {
     const { results } = await searchMemories(userId, {
       queryText: query,
       topK,
-      similarityThreshold: 0.7,
+      similarityThreshold: 0.5,
       sortField: 'similarity',
       sortDirection: 'DESC',
     });
