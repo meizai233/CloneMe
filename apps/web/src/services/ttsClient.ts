@@ -13,6 +13,12 @@ const readEnvNumber = (raw: unknown, fallback: number, min: number, max: number)
 const MOUTH_GAIN = readEnvNumber(import.meta.env.VITE_LIVE2D_MOUTH_GAIN, 1.4, 0.2, 4);
 const MOUTH_NOISE_FLOOR = readEnvNumber(import.meta.env.VITE_LIVE2D_MOUTH_NOISE_FLOOR, 0.02, 0, 0.2);
 const MOUTH_SMOOTHING = readEnvNumber(import.meta.env.VITE_LIVE2D_MOUTH_SMOOTHING, 0.75, 0, 0.95);
+const MOUTH_MIN_WHILE_SPEAKING = readEnvNumber(
+  import.meta.env.VITE_LIVE2D_MOUTH_MIN_WHILE_SPEAKING,
+  0.12,
+  0,
+  0.4
+);
 
 type OnSpeakingChange = (speaking: boolean) => void;
 type OnMouthOpen = (value: number) => void;
@@ -32,7 +38,7 @@ export class TTSClient {
   private isPlaying = false;
   private audioContext: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
-  private analyserData: Uint8Array | null = null;
+  private analyserData: Uint8Array<ArrayBuffer> | null = null;
   private currentSource: AudioBufferSourceNode | null = null;
   private mouthAnimTimer: ReturnType<typeof setInterval> | null = null;
   private smoothedMouthOpen = 0;
@@ -265,7 +271,7 @@ export class TTSClient {
     analyser.smoothingTimeConstant = 0.5;
     analyser.connect(this.audioContext.destination);
     this.analyser = analyser;
-    this.analyserData = new Uint8Array(analyser.fftSize);
+    this.analyserData = new Uint8Array(analyser.fftSize) as Uint8Array<ArrayBuffer>;
   }
 
   /**
@@ -288,7 +294,8 @@ export class TTSClient {
         const target = Math.min(1, boosted);
         this.smoothedMouthOpen =
           this.smoothedMouthOpen * MOUTH_SMOOTHING + target * (1 - MOUTH_SMOOTHING);
-        this.onMouthOpen?.(this.smoothedMouthOpen);
+        const speakingMouthOpen = Math.max(MOUTH_MIN_WHILE_SPEAKING, this.smoothedMouthOpen);
+        this.onMouthOpen?.(speakingMouthOpen);
       }, 33);
       return;
     }
@@ -297,7 +304,8 @@ export class TTSClient {
     this.mouthAnimTimer = setInterval(() => {
       t += 1;
       const value = (Math.sin(t * 0.6) + 1) * 0.3 + Math.random() * 0.25;
-      this.onMouthOpen?.(Math.min(1, Math.max(0, value)));
+      const mouthOpen = Math.min(1, Math.max(MOUTH_MIN_WHILE_SPEAKING, value));
+      this.onMouthOpen?.(mouthOpen);
     }, 80);
   }
 

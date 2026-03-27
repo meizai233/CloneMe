@@ -18,6 +18,7 @@ import {
   type PersonaInfo
 } from "./services/api";
 import { TTSClient, SentenceBuffer } from "./services/ttsClient";
+import { VoiceSessionClient } from "./services/voiceSessionClient";
 import { resolveAvatarModelCapability } from "./avatar/modelCapabilities";
 
 
@@ -97,6 +98,7 @@ function Avatar2D(props: {
   const emotionClass = `emotion-${emotion}`;
   const usingLive2D = runtime === "live2d";
   const showLoader = !ready;
+  const [emotionUpdatedAt, setEmotionUpdatedAt] = useState(() => Date.now());
   const stageRef = useRef<HTMLDivElement | null>(null);
   const [previewFullscreen, setPreviewFullscreen] = useState(false);
 
@@ -111,6 +113,10 @@ function Avatar2D(props: {
       document.removeEventListener("fullscreenchange", syncFullscreenState);
     };
   }, []);
+
+  useEffect(() => {
+    setEmotionUpdatedAt(Date.now());
+  }, [emotion]);
 
   const togglePreviewFullscreen = useCallback(async () => {
     const stage = stageRef.current;
@@ -170,6 +176,13 @@ function Avatar2D(props: {
         {GESTURE_LABELS[currentGesture]} / 口型：{Math.round(mouthOpen * 100)}% / 语音：
         {speaking ? "播报中" : "待机"}
       </p>
+      <p className="avatar-emotion-live" aria-live="polite">
+        实时情绪：<strong>{EMOTION_LABELS[emotion]}</strong>
+        <span className="avatar-emotion-meta">({emotion})</span>
+        <span className="avatar-emotion-meta">
+          更新于 {new Date(emotionUpdatedAt).toLocaleTimeString("zh-CN", { hour12: false })}
+        </span>
+      </p>
     </div>
   );
 }
@@ -182,6 +195,7 @@ export default function App() {
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastActionRef = useRef<(() => Promise<void>) | null>(null);
   const ttsClientRef = useRef<TTSClient | null>(null);
+  const voiceSessionRef = useRef<VoiceSessionClient | null>(null);
   const sentenceBufferRef = useRef<SentenceBuffer | null>(null);
   const typingQueueRef = useRef("");
   const typingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -237,6 +251,10 @@ export default function App() {
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
   const [chatPhase, setChatPhase] = useState<"idle" | "thinking" | "typing">("idle");
   const [thinkingDots, setThinkingDots] = useState("");
+  const [realtimeActive, setRealtimeActive] = useState(false);
+  const [realtimePartialText, setRealtimePartialText] = useState("");
+  const [realtimeFinalText, setRealtimeFinalText] = useState("");
+  const [realtimeLoading, setRealtimeLoading] = useState(false);
 
   // 每次页面加载生成新的 userId，刷新页面后自动更换
   const [userId] = useState(() => {
@@ -247,7 +265,7 @@ export default function App() {
     return `user_${uuid}`;
   });
 
-  const loading = initLoading || chatLoading || voiceCloneLoading;
+  const loading = initLoading || chatLoading || voiceCloneLoading || realtimeLoading;
 
   const cleanupPlayback = useCallback(() => {
     if (fallbackTimerRef.current) {
@@ -674,7 +692,68 @@ export default function App() {
   // voiceId 变化时更新 TTS 客户端
   useEffect(() => {
     ttsClientRef.current?.setVoiceId(voiceId ?? undefined);
+    voiceSessionRef.current?.setVoiceId(voiceId ?? undefined);
   }, [voiceId]);
+
+  useEffect(() => {
+    const voiceSession = new VoiceSessionClient({
+      voiceId: voiceId ?? undefined,
+      onSpeakingChange: (speaking) => {
+        adapterRef.current?.setSpeaking(speaking);
+        setIsSpeaking(speaking);
+      },
+      onMouthOpen: (value) => {
+        setMouthOpen(value);
+        adapterRef.current?.setMouthOpen(value);
+      },
+      onAsrPartial: (text) => {
+        setRealtimePartialText(text);
+      },
+      onAsrFinal: (text) => {
+        setRealtimePartialText("");
+        setRealtimeFinalText(text);
+        setAnswer("");
+        setReferences([]);
+        setChatPhase("thinking");
+        setChatLoading(true);
+      },
+      onLlmDelta: (text) => {
+        setChatPhase("typing");
+        setAnswer((prev) => prev + text);
+      },
+      onLlmDone: (event) => {
+        const modelCapability = resolveAvatarModelCapability(resolveLive2DModelUrl(selectedPersona));
+        const planEmotion = normalizeEmotion(event.avatarPlan?.emotion);
+        const chosenEmotion = modelCapability.allowedEmotions.includes(planEmotion)
+          ? planEmotion
+          : normalizeEmotion(event.emotion);
+        adapterRef.current?.setEmotion(chosenEmotion);
+        const candidateGestures = (event.avatarPlan?.gestures ?? [])
+          .map((item) => normalizeGesture(item))
+          .filter((item) => item !== "none");
+        const chosenGesture =
+          candidateGestures.find((item) => modelCapability.allowedGestures.includes(item)) ?? "none";
+        if (chosenGesture !== "none") {
+          adapterRef.current?.playGesture(chosenGesture);
+          markGesture(chosenGesture);
+        }
+        setAnswer(event.reply);
+        setReferences(event.references);
+        setChatPhase("idle");
+        setChatLoading(false);
+      }
+    });
+    voiceSessionRef.current = voiceSession;
+    void voiceSession.connect().catch(() => {
+      // 首次连接失败不阻塞主流程，启动实时模式时会重试
+    });
+
+    return () => {
+      voiceSession.disconnect();
+      voiceSessionRef.current = null;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const playAnswerAudio = useCallback(
     async (audioUrl: string, cues: number[]) => {
@@ -850,7 +929,62 @@ export default function App() {
     return (ALL_AVATAR_GESTURES as string[]).includes(value) ? (value as AvatarGesture) : "none";
   }, []);
 
+  const stopRealtimeSession = useCallback(() => {
+    voiceSessionRef.current?.interrupt();
+    voiceSessionRef.current?.stopRecording();
+    setRealtimeActive(false);
+    setRealtimeLoading(false);
+    setRealtimePartialText("");
+    setChatPhase("idle");
+    setChatLoading(false);
+  }, []);
+
+  const startRealtimeSession = useCallback(async () => {
+    stopModeIntro();
+    cleanupPlayback();
+    stopTypewriter();
+    setErrorMessage(null);
+    setRealtimeLoading(true);
+    setRealtimePartialText("");
+    setRealtimeFinalText("");
+    setAnswer("实时语音已启动，请开始说话...");
+    setReferences([]);
+
+    try {
+      const client = voiceSessionRef.current;
+      if (!client) {
+        throw new Error("实时语音客户端未初始化");
+      }
+      await client.connect();
+      client.startSession({
+        sessionId,
+        userId,
+        persona: selectedPersona,
+        voiceId: voiceId ?? undefined,
+        avatarModel: resolveAvatarModelCapability(resolveLive2DModelUrl(selectedPersona)),
+      });
+      await client.startRecording();
+      setRealtimeActive(true);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setErrorMessage(`实时语音启动失败: ${message}`);
+      setRealtimeActive(false);
+    } finally {
+      setRealtimeLoading(false);
+    }
+  }, [
+    cleanupPlayback,
+    resolveLive2DModelUrl,
+    selectedPersona,
+    sessionId,
+    stopModeIntro,
+    stopTypewriter,
+    userId,
+    voiceId,
+  ]);
+
   const runAsk = useCallback(async () => {
+    stopRealtimeSession();
     // 提问优先级最高：先硬中断当前自动播报/口型，再进入新一轮问答。
     ttsClientRef.current?.stop();
     sentenceBufferRef.current?.reset();
@@ -979,6 +1113,7 @@ export default function App() {
     playFallbackLipSync,
     question,
     resolveLive2DModelUrl,
+    stopRealtimeSession,
     stopModeIntro,
     stopTypewriter
   ]);
@@ -1134,10 +1269,34 @@ export default function App() {
               <span>问题</span>
               <input value={question} onChange={(e) => setQuestion(e.target.value)} />
             </label>
-            <button type="submit" disabled={loading}>
+            <button type="submit" disabled={loading || realtimeActive}>
               {chatLoading ? "思考中..." : "3) 开始提问"}
             </button>
           </form>
+
+          <div className="voice-clone-box">
+            <h3>实时语音对话</h3>
+            <p className="voice-hint">
+              当前模式：{realtimeActive ? "通话中（可插话打断）" : "待机"}
+            </p>
+            <div className="recording-controls">
+              {!realtimeActive ? (
+                <button type="button" onClick={startRealtimeSession} disabled={loading}>
+                  开始实时对话
+                </button>
+              ) : (
+                <button type="button" onClick={stopRealtimeSession} className="recording-active">
+                  停止实时对话
+                </button>
+              )}
+            </div>
+            {realtimeFinalText && (
+              <p className="voice-hint">最近识别：{realtimeFinalText}</p>
+            )}
+            {realtimePartialText && (
+              <p className="voice-hint">正在识别：{realtimePartialText}</p>
+            )}
+          </div>
 
           {errorMessage && (
             <div className="error-box">

@@ -451,6 +451,22 @@ button:disabled {
   font-size: 12px;
 }
 
+.avatar-emotion-live {
+  margin: 8px 0 0;
+  color: #d9e3ff;
+  font-size: 13px;
+}
+
+.avatar-emotion-live strong {
+  color: #8fd2ff;
+}
+
+.avatar-emotion-meta {
+  margin-left: 8px;
+  color: #afbee9;
+  font-size: 12px;
+}
+
 .answer-box {
   margin-top: 14px;
   border-radius: 12px;
