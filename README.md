@@ -28,8 +28,26 @@ Open:
 - `POST /api/avatar/init`
   - body: `{ creatorName, domain, docs: string[] }`
 - `POST /api/chat`
-  - body: `{ userQuestion, mode: "teacher" | "friend" | "support" }`
-  - returns: `{ reply, references, emotion, audioUrl, phonemeCues }`
+  - body: `{ userQuestion, mode: "teacher" | "friend" | "support", voiceId? }`
+  - returns: `{ reply, references, emotion, audioUrl, phonemeCues, latency? }`
+  - note: when `voiceId` is provided, server tries third-party cloned TTS first; timeout retries once and falls back to text+lip-sync cues
+- `POST /api/voice-clone/profile`
+  - body: `{ speakerName?, consentConfirmed: true, sampleAudioBase64 }`
+  - returns: `{ voiceId, metrics: { durationSec, snrDb, silenceRatio } }`
+  - quality gate: duration/SNR/silence ratio are validated server-side
+- `POST /api/voice-clone/synthesize`
+  - body: `{ voiceId, text, style? }`
+  - returns: `{ audioUrl, latency: { firstByteMs, totalMs, meetsTarget } }`
+  - abuse guard: sensitive text filter + in-memory rate limit + audit log
+
+## Voice Clone Setup
+
+1. Copy `.env.example` to `.env`.
+2. Fill `TTS_API_KEY` and `TTS_API_URL`.
+3. Adjust provider paths if your platform differs:
+   - `TTS_VOICE_CLONE_PROFILE_PATH`
+   - `TTS_VOICE_CLONE_SYNTH_PATH`
+4. Run `npm run dev`, upload a WAV sample in web UI, create `voiceId`, then ask questions.
 
 ## Demo Flow
 

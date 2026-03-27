@@ -18,6 +18,29 @@ export interface ChatResponse {
   emotion: AvatarEmotion;
   audioUrl: string;
   phonemeCues: number[];
+  latency?: {
+    firstByteMs: number;
+    totalMs: number;
+    meetsTarget: boolean;
+  };
+}
+
+export interface VoiceCloneProfileResponse {
+  voiceId: string;
+  metrics: {
+    durationSec: number;
+    snrDb: number;
+    silenceRatio: number;
+  };
+}
+
+export interface VoiceCloneSynthesizeResponse {
+  audioUrl: string;
+  latency: {
+    firstByteMs: number;
+    totalMs: number;
+    meetsTarget: boolean;
+  };
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3001";
@@ -31,7 +54,10 @@ class ApiError extends Error {
 }
 
 function joinUrl(base: string, path: string): string {
-  if (/^https?:\/\//.test(path)) {
+  if (!path) {
+    return "";
+  }
+  if (/^(https?:\/\/|data:)/.test(path)) {
     return path;
   }
   return `${base.replace(/\/$/, "")}${path.startsWith("/") ? path : `/${path}`}`;
@@ -75,12 +101,43 @@ export async function initAvatarProfile(payload: InitAvatarRequest): Promise<Ini
 export async function chatWithAvatar(payload: {
   userQuestion: string;
   mode: PersonaMode;
+  voiceId?: string;
 }): Promise<ChatResponse> {
-  const data = await requestJson<ChatResponse, { userQuestion: string; mode: PersonaMode }>(
+  const data = await requestJson<
+    ChatResponse,
+    { userQuestion: string; mode: PersonaMode; voiceId?: string }
+  >(
     "/api/chat",
     payload
   );
 
+  return {
+    ...data,
+    audioUrl: joinUrl(API_BASE_URL, data.audioUrl)
+  };
+}
+
+export async function createVoiceCloneProfile(payload: {
+  speakerName?: string;
+  consentConfirmed: true;
+  sampleAudioBase64: string;
+}): Promise<VoiceCloneProfileResponse> {
+  return requestJson<VoiceCloneProfileResponse, typeof payload>("/api/voice-clone/profile", payload);
+}
+
+export async function synthesizeClonedVoice(payload: {
+  voiceId: string;
+  text: string;
+  style?: {
+    speed?: number;
+    pitch?: number;
+    emotion?: "neutral" | "happy" | "serious";
+  };
+}): Promise<VoiceCloneSynthesizeResponse> {
+  const data = await requestJson<VoiceCloneSynthesizeResponse, typeof payload>(
+    "/api/voice-clone/synthesize",
+    payload
+  );
   return {
     ...data,
     audioUrl: joinUrl(API_BASE_URL, data.audioUrl)

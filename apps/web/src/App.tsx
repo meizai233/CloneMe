@@ -5,7 +5,12 @@ import {
   type AvatarRuntime,
   type Live2DDriver
 } from "./avatar/live2dAdapter";
-import { chatWithAvatar, initAvatarProfile, type PersonaMode } from "./services/api";
+import {
+  chatWithAvatar,
+  createVoiceCloneProfile,
+  initAvatarProfile,
+  type PersonaMode
+} from "./services/api";
 
 const modeLabels: Record<PersonaMode, string> = {
   teacher: "老师模式",
@@ -89,8 +94,24 @@ export default function App() {
   const [avatarReady, setAvatarReady] = useState(false);
   const [avatarRuntimeError, setAvatarRuntimeError] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [voiceId, setVoiceId] = useState<string | null>(null);
+  const [consentConfirmed, setConsentConfirmed] = useState(false);
+  const [speakerName, setSpeakerName] = useState("我的音色");
+  const [sampleFile, setSampleFile] = useState<File | null>(null);
+  const [voiceMetrics, setVoiceMetrics] = useState<{
+    durationSec: number;
+    snrDb: number;
+    silenceRatio: number;
+  } | null>(null);
+  const [voiceLatency, setVoiceLatency] = useState<{
+    firstByteMs: number;
+    totalMs: number;
+    meetsTarget: boolean;
+  } | null>(null);
+  const [voiceCloneLoading, setVoiceCloneLoading] = useState(false);
+  const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
 
-  const loading = initLoading || chatLoading;
+  const loading = initLoading || chatLoading || voiceCloneLoading;
   const statusLabel = initLoading ? "初始化中" : chatLoading ? "思考中" : isSpeaking ? "播报中" : "待机";
 
   const docs = useMemo(
@@ -168,6 +189,34 @@ export default function App() {
     [cleanupPlayback]
   );
 
+  const playFallbackLipSync = useCallback(
+    (cues: number[]) => {
+      const safeCues = cues.length > 0 ? cues : [0.2, 0.7, 0.35, 0.8, 0.25, 0.65];
+      stopLipSyncRef.current = adapterRef.current?.playLipSync(safeCues) ?? null;
+      adapterRef.current?.setSpeaking(true);
+      fallbackTimerRef.current = setTimeout(() => {
+        cleanupPlayback();
+      }, Math.max(1200, safeCues.length * 120));
+    },
+    [cleanupPlayback]
+  );
+
+  const fileToBase64 = useCallback((file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result;
+        if (typeof result !== "string") {
+          reject(new Error("音频读取失败"));
+          return;
+        }
+        resolve(result);
+      };
+      reader.onerror = () => reject(new Error("音频读取失败"));
+      reader.readAsDataURL(file);
+    });
+  }, []);
+
   const runInitAvatar = useCallback(async () => {
     setInitLoading(true);
     setErrorMessage(null);
@@ -195,6 +244,52 @@ export default function App() {
     await runInitAvatar();
   }
 
+  const runCreateVoiceClone = useCallback(async () => {
+    setVoiceCloneLoading(true);
+    setErrorMessage(null);
+    setVoiceLatency(null);
+
+    if (!consentConfirmed) {
+      setVoiceCloneLoading(false);
+      setErrorMessage("请先确认已获本人授权，再创建音色。");
+      return;
+    }
+    if (!sampleFile) {
+      setVoiceCloneLoading(false);
+      setErrorMessage("请先上传 30 秒以上 WAV 音频样本。");
+      return;
+    }
+    if (!sampleFile.name.toLowerCase().endsWith(".wav")) {
+      setVoiceCloneLoading(false);
+      setErrorMessage("当前仅支持 WAV 样本，请重新上传。");
+      return;
+    }
+
+    try {
+      const sampleAudioBase64 = await fileToBase64(sampleFile);
+      const data = await createVoiceCloneProfile({
+        speakerName: speakerName.trim() || "我的音色",
+        consentConfirmed: true,
+        sampleAudioBase64
+      });
+      setVoiceId(data.voiceId);
+      setVoiceMetrics(data.metrics);
+      setAnswer("音色创建完成。现在提问时将优先使用克隆语音播报。");
+      setReferences([]);
+      adapterRef.current?.setEmotion("happy");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setErrorMessage(message);
+    } finally {
+      setVoiceCloneLoading(false);
+    }
+  }, [consentConfirmed, fileToBase64, sampleFile, speakerName]);
+
+  async function createVoiceClone() {
+    lastActionRef.current = runCreateVoiceClone;
+    await runCreateVoiceClone();
+  }
+
   const runAsk = useCallback(async () => {
     setChatLoading(true);
     setErrorMessage(null);
@@ -210,23 +305,27 @@ export default function App() {
     try {
       const data = await chatWithAvatar({
         userQuestion: safeQuestion,
-        mode
+        mode,
+        voiceId: voiceId ?? undefined
       });
 
       setAnswer(data.reply);
       setReferences(data.references);
       adapterRef.current?.setEmotion(data.emotion);
+      setVoiceLatency(data.latency ?? null);
 
-      try {
-        await playAnswerAudio(data.audioUrl, data.phonemeCues);
-      } catch {
-        setErrorMessage("语音播放失败，已回退到离线口型演示。");
-        const fallbackCues = data.phonemeCues.length > 0 ? data.phonemeCues : [0.2, 0.7, 0.3, 0.9];
-        stopLipSyncRef.current = adapterRef.current?.playLipSync(fallbackCues) ?? null;
-        adapterRef.current?.setSpeaking(true);
-        fallbackTimerRef.current = setTimeout(() => {
-          cleanupPlayback();
-        }, Math.max(1200, fallbackCues.length * 120));
+      if (data.audioUrl) {
+        try {
+          await playAnswerAudio(data.audioUrl, data.phonemeCues);
+        } catch {
+          setErrorMessage("语音播放失败，已回退到离线口型演示。");
+          playFallbackLipSync(data.phonemeCues);
+        }
+      } else {
+        if (voiceId) {
+          setErrorMessage("语音服务降级为文本回复，已使用口型演示兜底。");
+        }
+        playFallbackLipSync(data.phonemeCues);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -234,17 +333,14 @@ export default function App() {
       setAnswer(buildOfflineReply(safeQuestion, mode));
       setReferences(["离线演示兜底回答"]);
       adapterRef.current?.setEmotion("thinking");
-
-      stopLipSyncRef.current = adapterRef.current?.playLipSync([0.2, 0.7, 0.35, 0.8, 0.25, 0.65]) ?? null;
-      adapterRef.current?.setSpeaking(true);
-      fallbackTimerRef.current = setTimeout(() => {
+      playFallbackLipSync([0.2, 0.7, 0.35, 0.8, 0.25, 0.65]);
+      setTimeout(() => {
         adapterRef.current?.setEmotion("neutral");
-        cleanupPlayback();
       }, 1500);
     } finally {
       setChatLoading(false);
     }
-  }, [cleanupPlayback, mode, playAnswerAudio, question]);
+  }, [mode, playAnswerAudio, playFallbackLipSync, question, voiceId]);
 
   async function onAsk(event: FormEvent) {
     event.preventDefault();
@@ -258,55 +354,127 @@ export default function App() {
   }
 
   return (
-    <main className="layout">
-      <section className="panel">
-        <h1>CloneMe - 知识博主 AI 分身</h1>
-        <p className="subtitle">聊天 + 语音驱动口型 + 2D 数字形象（最小可演示版）</p>
-        <p className="status-chip">当前阶段：{statusLabel}</p>
-
-        <label className="block">
-          <span>知识库输入（每行一条）</span>
-          <textarea value={docsInput} onChange={(e) => setDocsInput(e.target.value)} rows={5} />
-        </label>
-
-        <button onClick={initAvatar} disabled={loading}>
-          {initLoading ? "初始化中..." : "1) 初始化分身"}
+    <main className={`layout layout-with-floating-avatar ${leftPanelCollapsed ? "left-panel-collapsed" : ""}`}>
+      <section className={`panel panel-main ${leftPanelCollapsed ? "is-collapsed" : ""}`}>
+        <button
+          type="button"
+          className="panel-collapse-toggle"
+          onClick={() => setLeftPanelCollapsed((prev) => !prev)}
+          aria-label={leftPanelCollapsed ? "展开左侧面板" : "收起左侧面板"}
+          title={leftPanelCollapsed ? "展开左侧面板" : "收起左侧面板"}
+        >
+          {leftPanelCollapsed ? "›" : "‹"}
         </button>
+        <div className="panel-main-content">
+          <h1>CloneMe - 知识博主 AI 分身</h1>
+          <p className="subtitle">聊天 + 语音驱动口型 + 2D 数字形象（最小可演示版）</p>
+          <p className="status-chip">当前阶段：{statusLabel}</p>
 
-        <div className="mode-row">
-          {(Object.keys(modeLabels) as PersonaMode[]).map((item) => (
-            <button
-              key={item}
-              className={item === mode ? "active" : ""}
-              onClick={() => setMode(item)}
-              disabled={loading}
-            >
-              {modeLabels[item]}
-            </button>
-          ))}
-        </div>
-
-        <form onSubmit={onAsk}>
           <label className="block">
-            <span>问题</span>
-            <input value={question} onChange={(e) => setQuestion(e.target.value)} />
+            <span>知识库输入（每行一条）</span>
+            <textarea value={docsInput} onChange={(e) => setDocsInput(e.target.value)} rows={5} />
           </label>
-          <button type="submit" disabled={loading}>
-            {chatLoading ? "思考中..." : "2) 开始提问"}
-          </button>
-        </form>
 
-        {errorMessage && (
-          <div className="error-box">
-            <p>{errorMessage}</p>
-            <button onClick={retryLastAction} disabled={loading}>
-              重试上一步
-            </button>
+          <button onClick={initAvatar} disabled={loading}>
+            {initLoading ? "初始化中..." : "1) 初始化分身"}
+          </button>
+
+          <div className="mode-row">
+            {(Object.keys(modeLabels) as PersonaMode[]).map((item) => (
+              <button
+                key={item}
+                className={item === mode ? "active" : ""}
+                onClick={() => setMode(item)}
+                disabled={loading}
+              >
+                {modeLabels[item]}
+              </button>
+            ))}
           </div>
-        )}
+
+          <div className="voice-clone-box">
+            <h3>语音克隆（第三方 TTS）</h3>
+            <label className="block">
+              <span>音色名称</span>
+              <input
+                value={speakerName}
+                onChange={(e) => setSpeakerName(e.target.value)}
+                placeholder="例如：我的播客音色"
+              />
+            </label>
+            <label className="block">
+              <span>上传语音样本（WAV，建议 30s~3min）</span>
+              <input
+                type="file"
+                accept=".wav,audio/wav"
+                onChange={(e) => setSampleFile(e.target.files?.[0] ?? null)}
+              />
+            </label>
+            <label className="consent-row">
+              <input
+                type="checkbox"
+                checked={consentConfirmed}
+                onChange={(e) => setConsentConfirmed(e.target.checked)}
+              />
+              <span>我确认已获本人授权用于语音克隆</span>
+            </label>
+            <button onClick={createVoiceClone} disabled={loading}>
+              {voiceCloneLoading ? "创建音色中..." : "2) 创建克隆音色"}
+            </button>
+            {voiceId && (
+              <button
+                type="button"
+                onClick={() => {
+                  setVoiceId(null);
+                  setVoiceMetrics(null);
+                  setVoiceLatency(null);
+                }}
+                disabled={loading}
+              >
+                清除音色
+              </button>
+            )}
+            <p className="voice-hint">
+              {voiceId
+                ? `音色已就绪：${voiceId}`
+                : "未创建音色：提问时将使用默认语音占位或口型兜底"}
+            </p>
+            {voiceMetrics && (
+              <p className="voice-metrics">
+                质量指标：时长 {voiceMetrics.durationSec.toFixed(1)}s / SNR{" "}
+                {voiceMetrics.snrDb.toFixed(1)}dB / 静音 {(voiceMetrics.silenceRatio * 100).toFixed(1)}%
+              </p>
+            )}
+            {voiceLatency && (
+              <p className="voice-metrics">
+                合成延迟：首包 {voiceLatency.firstByteMs}ms / 全量 {voiceLatency.totalMs}ms /{" "}
+                {voiceLatency.meetsTarget ? "达标" : "未达标"}
+              </p>
+            )}
+          </div>
+
+          <form onSubmit={onAsk}>
+            <label className="block">
+              <span>问题</span>
+              <input value={question} onChange={(e) => setQuestion(e.target.value)} />
+            </label>
+            <button type="submit" disabled={loading}>
+              {chatLoading ? "思考中..." : "3) 开始提问"}
+            </button>
+          </form>
+
+          {errorMessage && (
+            <div className="error-box">
+              <p>{errorMessage}</p>
+              <button onClick={retryLastAction} disabled={loading}>
+                重试上一步
+              </button>
+            </div>
+          )}
+        </div>
       </section>
 
-      <section className="panel">
+      <section className="panel panel-avatar panel-avatar-floating">
         <Avatar2D
           speaking={isSpeaking}
           emotion={emotion}
@@ -315,8 +483,8 @@ export default function App() {
           runtime={runtime}
           runtimeError={avatarRuntimeError}
         />
-        <div className="answer-box">
-          <h3>分身回复</h3>
+        <details className="answer-box">
+          <summary>分身回复（点击展开）</summary>
           <p>{answer}</p>
           {references.length > 0 && (
             <>
@@ -328,7 +496,7 @@ export default function App() {
               </ul>
             </>
           )}
-        </div>
+        </details>
       </section>
     </main>
   );

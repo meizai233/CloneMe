@@ -24,6 +24,26 @@ export interface Live2DDriver {
 
 export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): Live2DDriver {
   const { onStateChange } = options;
+  const viewportFit = {
+    widthRatio: 0.78,
+    heightRatio: 0.86,
+    centerXRatio: 0.3,
+    baselineYRatio: 0.54,
+    // Live2D bounds often include large transparent margins.
+    // Use a slightly right-shifted focus point inside bounds so visible body stays centered.
+    focalXRatio: 0.68,
+    focalYRatio: 1
+  };
+  const viewportHeightRatioRaw = Number(import.meta.env.VITE_LIVE2D_VIEWPORT_HEIGHT_RATIO ?? 0.9);
+  const viewportHeightRatio = Number.isFinite(viewportHeightRatioRaw)
+    ? Math.min(1.2, Math.max(0.3, viewportHeightRatioRaw))
+    : 0.9;
+  const scaleRatioRaw = Number(import.meta.env.VITE_LIVE2D_SCALE_RATIO ?? 0.8);
+  const scaleRatio = Number.isFinite(scaleRatioRaw) ? Math.min(1.5, Math.max(0.2, scaleRatioRaw)) : 0.8;
+  const bottomSafeAreaRatioRaw = Number(import.meta.env.VITE_LIVE2D_BOTTOM_SAFE_AREA_RATIO ?? 0.08);
+  const bottomSafeAreaRatio = Number.isFinite(bottomSafeAreaRatioRaw)
+    ? Math.min(0.25, Math.max(0, bottomSafeAreaRatioRaw))
+    : 0.08;
   const state: Live2DState = {
     emotion: "neutral",
     speaking: false,
@@ -47,6 +67,8 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
       }
     | null = null;
   let timer: ReturnType<typeof setInterval> | null = null;
+  let idleTimer: ReturnType<typeof setInterval> | null = null;
+  let onResize: (() => void) | null = null;
 
   const emit = () => {
     if (!onStateChange) return;
@@ -67,6 +89,51 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
   const applyMouthOpenToModel = (value: number) => {
     setModelParameter("ParamMouthOpenY", value);
     setModelParameter("PARAM_MOUTH_OPEN_Y", value);
+  };
+
+  const stopIdleMotion = () => {
+    if (idleTimer) {
+      clearInterval(idleTimer);
+      idleTimer = null;
+    }
+  };
+
+  const startIdleMotion = () => {
+    stopIdleMotion();
+
+    const startedAt = Date.now();
+    idleTimer = setInterval(() => {
+      if (!live2dModel) return;
+
+      const t = (Date.now() - startedAt) / 1000;
+      const breathing = (Math.sin(t * 1.7) + 1) * 0.5;
+      const headYaw = Math.sin(t * 0.8) * 4;
+      const headPitch = Math.sin(t * 1.1) * 2.2;
+      const bodyYaw = Math.sin(t * 0.55) * 2;
+
+      setModelParameter("ParamBreath", breathing);
+      setModelParameter("PARAM_BREATH", breathing);
+      setModelParameter("ParamAngleY", headYaw);
+      setModelParameter("PARAM_ANGLE_Y", headYaw);
+      setModelParameter("ParamAngleX", headPitch);
+      setModelParameter("PARAM_ANGLE_X", headPitch);
+      setModelParameter("ParamBodyAngleY", bodyYaw);
+      setModelParameter("PARAM_BODY_ANGLE_Y", bodyYaw);
+
+      // Keep subtle mouth movement while idle; speaking is controlled by lip-sync cues.
+      if (!state.speaking) {
+        const idleMouth = 0.03 + Math.max(0, Math.sin(t * 1.5)) * 0.04;
+        applyMouthOpenToModel(idleMouth);
+      }
+
+      // Soft blink cycle to avoid static gaze.
+      const blinkPhase = (Math.sin(t * 2.6) + 1) * 0.5;
+      const eyeOpen = blinkPhase > 0.92 ? 0.2 : 1;
+      setModelParameter("ParamEyeLOpen", eyeOpen);
+      setModelParameter("ParamEyeROpen", eyeOpen);
+      setModelParameter("PARAM_EYE_L_OPEN", eyeOpen);
+      setModelParameter("PARAM_EYE_R_OPEN", eyeOpen);
+    }, 50);
   };
 
   const applyEmotionToModel = (emotion: AvatarEmotion) => {
@@ -96,11 +163,37 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
   const resizeModelToViewport = () => {
     if (!pixiApp || !live2dModel) return;
     const { width, height } = pixiApp.renderer;
-    const scale = Math.min(width / Math.max(1, live2dModel.width), height / Math.max(1, live2dModel.height)) * 0.92;
+    const canvas = pixiApp.view as HTMLCanvasElement | undefined;
+    const canvasCssHeight = Math.max(1, canvas?.clientHeight ?? height);
+    const rendererToCssRatio = height / canvasCssHeight;
+    const localBounds = (
+      live2dModel as unknown as {
+        getLocalBounds?: () => { x: number; y: number; width: number; height: number };
+      }
+    ).getLocalBounds?.();
+    const modelWidth = Math.max(1, localBounds?.width ?? live2dModel.width);
+    const modelHeight = Math.max(1, localBounds?.height ?? live2dModel.height);
+    const usableCanvasCssHeight = canvasCssHeight * (1 - bottomSafeAreaRatio);
+    const targetHeightCss = Math.min(window.innerHeight * viewportHeightRatio, usableCanvasCssHeight);
+    const targetHeight = Math.max(1, targetHeightCss * rendererToCssRatio);
+    const scaleBase = Math.min(
+      (width / modelWidth) * viewportFit.widthRatio,
+      (targetHeight / modelHeight) * viewportFit.heightRatio
+    );
+    const scale = scaleBase * scaleRatio;
     live2dModel.scale.set(scale);
-    live2dModel.anchor?.set?.(0.5, 1);
-    live2dModel.x = width * 0.5;
-    live2dModel.y = height * 0.98;
+    const pivotX = localBounds
+      ? localBounds.x + localBounds.width * viewportFit.focalXRatio
+      : live2dModel.width * viewportFit.focalXRatio;
+    const pivotY = localBounds
+      ? localBounds.y + localBounds.height * viewportFit.focalYRatio
+      : live2dModel.height * viewportFit.focalYRatio;
+    (live2dModel as unknown as { pivot?: { set?: (x: number, y: number) => void } }).pivot?.set?.(
+      pivotX,
+      pivotY
+    );
+    live2dModel.x = width * viewportFit.centerXRatio;
+    live2dModel.y = height * Math.min(0.98, viewportFit.baselineYRatio + bottomSafeAreaRatio);
   };
 
   const stopLipSync = () => {
@@ -139,23 +232,28 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
           import("pixi-live2d-display/cubism4")
         ]);
 
+        const devicePixelRatio =
+          typeof window !== "undefined" ? Math.min(window.devicePixelRatio || 1, 2) : 1;
+        const appOptions = {
+          autoStart: true,
+          backgroundAlpha: 0,
+          antialias: true,
+          resizeTo: canvas.parentElement ?? undefined,
+          resolution: devicePixelRatio,
+          autoDensity: true
+        };
+
         try {
           pixiApp = new Application({
             view: canvas,
-            autoStart: true,
-            backgroundAlpha: 0,
-            antialias: true,
-            resizeTo: canvas.parentElement ?? undefined
+            ...appOptions
           } as never);
         } catch {
           pixiApp = new Application();
           const appWithInit = pixiApp as unknown as { init?: (options: unknown) => Promise<void> };
           await appWithInit.init?.({
             canvas,
-            autoStart: true,
-            backgroundAlpha: 0,
-            antialias: true,
-            resizeTo: canvas.parentElement ?? undefined
+            ...appOptions
           });
         }
 
@@ -163,7 +261,16 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
         if (pixiApp) {
           pixiApp.stage.addChild(live2dModel);
           resizeModelToViewport();
+          if (typeof window !== "undefined") {
+            window.requestAnimationFrame(() => resizeModelToViewport());
+            window.setTimeout(() => resizeModelToViewport(), 120);
+          }
+          onResize = () => resizeModelToViewport();
+          if (typeof window !== "undefined") {
+            window.addEventListener("resize", onResize);
+          }
           applyEmotionToModel(state.emotion);
+          startIdleMotion();
           state.runtime = "live2d";
           state.runtimeError = null;
         }
@@ -210,7 +317,12 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
       return stopLipSync;
     },
     destroy() {
+      stopIdleMotion();
       stopLipSync();
+      if (onResize && typeof window !== "undefined") {
+        window.removeEventListener("resize", onResize);
+      }
+      onResize = null;
       state.speaking = false;
       state.initialized = false;
       live2dModel = null;

@@ -10,6 +10,7 @@ export interface CreatorProfile {
 export interface ChatRequestPayload {
   userQuestion: string;
   mode: PersonaMode;
+  voiceId?: string;
 }
 
 export interface ChatResponsePayload {
@@ -18,4 +19,18 @@ export interface ChatResponsePayload {
   emotion: "neutral" | "happy" | "thinking";
   audioUrl: string;
   phonemeCues: number[];
+  latency?: {
+    firstByteMs: number;
+    totalMs: number;
+    meetsTarget: boolean;
+  };
+}
+
+export interface VoiceCloneProfilePayload {
+  voiceId: string;
+  metrics: {
+    durationSec: number;
+    snrDb: number;
+    silenceRatio: number;
+  };
 }

@@ -2,6 +2,8 @@
   font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
   color: #e7ebff;
   background: #0f1220;
+  --page-pad: 20px;
+  --panel-gap: 16px;
 }
 
 * {
@@ -14,10 +16,15 @@ body {
 
 .layout {
   min-height: 100vh;
-  padding: 24px;
+  padding: var(--page-pad);
   display: grid;
   gap: 16px;
   grid-template-columns: repeat(2, minmax(280px, 1fr));
+}
+
+.layout-with-floating-avatar {
+  grid-template-columns: 1fr;
+  padding: var(--page-pad);
 }
 
 .panel {
@@ -25,6 +32,64 @@ body {
   border: 1px solid #2c355f;
   border-radius: 16px;
   padding: 18px;
+}
+
+.panel-avatar {
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-main {
+  position: fixed;
+  top: var(--page-pad);
+  left: var(--page-pad);
+  width: calc((100vw - (var(--page-pad) * 2) - var(--panel-gap)) * 0.3);
+  height: calc(100vh - (var(--page-pad) * 2));
+  z-index: 18;
+  padding: 0;
+  overflow: hidden;
+  transition: transform 220ms ease;
+}
+
+.panel-main.is-collapsed {
+  transform: translateX(calc(-100% + 44px));
+}
+
+.panel-main-content {
+  height: 100%;
+  overflow: auto;
+  padding: 18px;
+  transition: opacity 180ms ease;
+}
+
+.panel-main.is-collapsed .panel-main-content {
+  opacity: 0;
+  pointer-events: none;
+  user-select: none;
+}
+
+.panel-collapse-toggle {
+  position: absolute;
+  top: 14px;
+  right: 8px;
+  z-index: 2;
+  width: 30px;
+  height: 30px;
+  margin: 0;
+  padding: 0;
+  border-radius: 999px;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.panel-avatar-floating {
+  position: fixed;
+  top: var(--page-pad);
+  right: var(--page-pad);
+  width: calc((100vw - (var(--page-pad) * 2) - var(--panel-gap)) * 0.7);
+  height: calc(100vh - (var(--page-pad) * 2));
+  z-index: 20;
+  overflow: hidden;
 }
 
 h1 {
@@ -92,19 +157,69 @@ button:disabled {
   margin: 8px 0 2px;
 }
 
+.voice-clone-box {
+  margin: 10px 0;
+  border: 1px solid #33458d;
+  border-radius: 12px;
+  background: #131a3f;
+  padding: 12px;
+}
+
+.voice-clone-box h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.consent-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 12px;
+  color: #dbe2ff;
+  font-size: 14px;
+}
+
+.consent-row input {
+  width: auto;
+}
+
+.voice-hint {
+  margin: 4px 0;
+  font-size: 13px;
+  color: #a8b7f8;
+}
+
+.voice-metrics {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: #cad7ff;
+}
+
 .avatar-card {
+  flex: 1;
+  min-height: 0;
   border-radius: 16px;
   border: 1px solid #37457f;
   padding: 18px;
   background: linear-gradient(160deg, #1f2a60, #1a1f36);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .avatar-stage {
   position: relative;
   margin: 0 auto;
   width: 100%;
-  max-width: 280px;
-  height: 280px;
+  max-width: none;
+  min-height: 0;
+  height: auto;
+  flex: 1;
+}
+
+.panel-avatar-floating .avatar-stage {
+  min-height: 0;
+  height: auto;
 }
 
 .avatar-canvas {
@@ -194,6 +309,37 @@ button:disabled {
   border: 1px solid #2b376f;
 }
 
+.panel-avatar-floating .answer-box {
+  max-height: 24vh;
+  overflow: auto;
+}
+
+.answer-box summary {
+  cursor: pointer;
+  color: #dbe2ff;
+  font-weight: 600;
+  list-style: none;
+}
+
+.answer-box summary::-webkit-details-marker {
+  display: none;
+}
+
+.answer-box summary::before {
+  content: "▸ ";
+  color: #9eb1ff;
+}
+
+.answer-box[open] summary::before {
+  content: "▾ ";
+}
+
+.answer-box p,
+.answer-box h4,
+.answer-box ul {
+  margin-top: 10px;
+}
+
 .error-box {
   margin-top: 10px;
   border-radius: 10px;
@@ -214,5 +360,42 @@ ul {
 @media (max-width: 900px) {
   .layout {
     grid-template-columns: 1fr;
+  }
+
+  .layout-with-floating-avatar {
+    padding-left: 24px;
+    padding-right: 24px;
+  }
+
+  .panel-main {
+    position: static;
+    width: auto;
+    height: auto;
+    transform: none !important;
+    transition: none;
+  }
+
+  .panel-main-content {
+    height: auto;
+    overflow: visible;
+    opacity: 1;
+    pointer-events: auto;
+    user-select: auto;
+  }
+
+  .panel-collapse-toggle {
+    display: none;
+  }
+
+  .panel-avatar-floating {
+    position: static;
+    width: auto;
+    height: auto;
+    z-index: auto;
+  }
+
+  .avatar-stage {
+    min-height: 320px;
+    height: min(68vh, 520px);
   }
 }
