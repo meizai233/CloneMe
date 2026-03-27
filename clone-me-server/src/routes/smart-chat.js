@@ -27,6 +27,80 @@ function generatePhonemeCues(text) {
   });
 }
 
+const DEFAULT_AVATAR_EMOTIONS = ['neutral', 'happy', 'thinking', 'serious', 'warm', 'confident'];
+const DEFAULT_AVATAR_GESTURES = ['none', 'nod', 'emphasis', 'thinking'];
+
+function normalizeStringList(value, fallback) {
+  if (!Array.isArray(value)) return fallback;
+  const list = value.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim());
+  if (list.length === 0) return fallback;
+  return Array.from(new Set(list));
+}
+
+function extractFirstJsonObject(text) {
+  if (!text || typeof text !== 'string') return null;
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start < 0 || end < start) return null;
+  return text.slice(start, end + 1);
+}
+
+async function planAvatarBehavior({ userQuestion, reply, personaKey, avatarModel }) {
+  if (!avatarModel || typeof avatarModel !== 'object') return null;
+  const allowedEmotions = normalizeStringList(avatarModel.allowedEmotions, DEFAULT_AVATAR_EMOTIONS);
+  const allowedGestures = normalizeStringList(avatarModel.allowedGestures, DEFAULT_AVATAR_GESTURES);
+  const safeModelKey = avatarModel.modelKey || 'generic_live2d';
+  const safeModelLabel = avatarModel.modelLabel || safeModelKey;
+  const gestureHints =
+    avatarModel.gestureHints && typeof avatarModel.gestureHints === 'object'
+      ? avatarModel.gestureHints
+      : {};
+
+  const plannerMessages = [
+    {
+      role: 'system',
+      content:
+        '你是数字人导演，任务是给当前回复挑选最合适的表情和动作。只允许输出 JSON，不要输出 markdown，不要解释。',
+    },
+    {
+      role: 'system',
+      content: `当前模型: ${safeModelLabel} (${safeModelKey})\n可用表情: ${allowedEmotions.join(', ')}\n可用动作: ${allowedGestures.join(', ')}\n动作提示: ${JSON.stringify(
+        gestureHints
+      )}\n规则:\n1) emotion 必须来自可用表情\n2) gestures 最多 2 个，且必须来自可用动作\n3) 投诉/生气场景优先 serious 或 thinking，再配 emphasis/comfortExplain（若可用）\n4) 若不需要动作，可输出 gestures: ["none"]\n输出格式: {"emotion":"...","gestures":["..."],"reason":"不超过20字"}`,
+    },
+    {
+      role: 'user',
+      content: `用户问题: ${userQuestion}\n角色: ${personaKey}\nAI回复: ${reply}`,
+    },
+  ];
+
+  try {
+    const planning = await chat(plannerMessages, { temperature: 0.2, max_tokens: 200 });
+    const content = planning?.choices?.[0]?.message?.content || '';
+    const jsonString = extractFirstJsonObject(content);
+    if (!jsonString) return null;
+    const parsed = JSON.parse(jsonString);
+    const emotion = allowedEmotions.includes(parsed.emotion) ? parsed.emotion : allowedEmotions[0];
+    const gesturesRaw = Array.isArray(parsed.gestures) ? parsed.gestures : [];
+    const gestures = Array.from(
+      new Set(
+        gesturesRaw
+          .filter((item) => typeof item === 'string')
+          .map((item) => item.trim())
+          .filter((item) => allowedGestures.includes(item))
+      )
+    ).slice(0, 2);
+    return {
+      emotion,
+      gestures: gestures.length > 0 ? gestures : ['none'],
+      reason: typeof parsed.reason === 'string' ? parsed.reason.slice(0, 30) : '',
+    };
+  } catch (error) {
+    console.warn('[avatar-plan] 规划失败，回退默认策略:', error.message);
+    return null;
+  }
+}
+
 /**
  * POST /api/chat/smart
  * 请求体: { userQuestion, persona?, sessionId?, voiceId? }
@@ -38,6 +112,7 @@ router.post('/smart', async (req, res) => {
       persona: personaKey,
       sessionId = 'default',
       userId,
+      avatarModel,
     } = req.body;
 
     if (!userQuestion) {
@@ -149,12 +224,26 @@ router.post('/smart', async (req, res) => {
     // 6. 写入 Memory
     appendRound(sessionId, userQuestion, fullReply, userId);
 
+    // 6.5 让 LLM 根据模型能力挑选表情/动作
+    const avatarPlan =
+      (await planAvatarBehavior({
+        userQuestion,
+        reply: fullReply,
+        personaKey: personaKey || getDefaultPersonaKey(),
+        avatarModel,
+      })) || {
+        emotion: inferEmotion(fullReply),
+        gestures: ['none'],
+        reason: 'fallback',
+      };
+
     // 7. 发送完成事件
     res.write(`data: ${JSON.stringify({
       type: 'done',
       reply: fullReply,
       references: ragResults.map(r => r.content).slice(0, 3),
       emotion: inferEmotion(fullReply),
+      avatarPlan,
       audioUrl: '',
       phonemeCues: generatePhonemeCues(fullReply),
       sessionId,

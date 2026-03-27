@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import {
   createLive2DAdapter,
   type AvatarEmotion,
@@ -18,11 +18,42 @@ import {
   type PersonaInfo
 } from "./services/api";
 import { TTSClient, SentenceBuffer } from "./services/ttsClient";
+import { resolveAvatarModelCapability } from "./avatar/modelCapabilities";
 
 
 function buildOfflineReply(question: string): string {
   return "当前网络异常，建议联系人工客服 400-091-0857。问题：" + question;
 }
+
+const INTERNAL_KNOWLEDGE_DOCS = [
+  "React 性能优化优先做拆分、memo、减少无意义重渲染。",
+  "TypeScript 项目中优先给 API 返回体建立显式类型。"
+];
+
+const HARU_MODEL_URL = "/models/haru_greeter_pro_jp/runtime/haru_greeter_t05.model3.json";
+const NATORI_MODEL_URL = "/models/natori_pro_zh/runtime/natori_pro_t06.model3.json";
+const PERSONA_STORAGE_KEY = "cloneme.selectedPersona";
+const ALL_AVATAR_EMOTIONS: AvatarEmotion[] = [
+  "neutral",
+  "happy",
+  "thinking",
+  "excited",
+  "confident",
+  "warm",
+  "serious",
+  "surprised",
+];
+const ALL_AVATAR_GESTURES: AvatarGesture[] = [
+  "none",
+  "nod",
+  "emphasis",
+  "thinking",
+  "clap",
+  "openArms",
+  "promoPitch",
+  "discountHighlight",
+  "comfortExplain",
+];
 
 function Avatar2D(props: {
   speaking: boolean;
@@ -31,16 +62,60 @@ function Avatar2D(props: {
   ready: boolean;
   runtime: AvatarRuntime;
   runtimeError: string | null;
+  canvasRef: RefObject<HTMLCanvasElement | null>;
 }) {
-  const { speaking, emotion, mouthOpen, ready, runtime, runtimeError } = props;
+  const { speaking, emotion, mouthOpen, ready, runtime, runtimeError, canvasRef } = props;
   const emotionClass = `emotion-${emotion}`;
   const usingLive2D = runtime === "live2d";
   const showLoader = !ready;
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const [previewFullscreen, setPreviewFullscreen] = useState(false);
+
+  useEffect(() => {
+    function syncFullscreenState() {
+      setPreviewFullscreen(document.fullscreenElement === stageRef.current);
+    }
+
+    document.addEventListener("fullscreenchange", syncFullscreenState);
+    syncFullscreenState();
+    return () => {
+      document.removeEventListener("fullscreenchange", syncFullscreenState);
+    };
+  }, []);
+
+  const togglePreviewFullscreen = useCallback(async () => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    try {
+      if (document.fullscreenElement === stage) {
+        await document.exitFullscreen();
+      } else {
+        await stage.requestFullscreen();
+      }
+    } catch {
+      // 浏览器或环境限制时静默失败，避免打断主流程。
+    }
+  }, []);
 
   return (
     <div className={`avatar-card ${emotionClass}`}>
-      <div className={`avatar-stage ${usingLive2D ? "avatar-stage-live2d" : "avatar-stage-loader"}`}>
-        <canvas id="avatar-canvas" className={`avatar-canvas ${usingLive2D ? "visible" : ""}`} />
+      <div
+        ref={stageRef}
+        className={`avatar-stage ${usingLive2D ? "avatar-stage-live2d" : "avatar-stage-loader"} ${previewFullscreen ? "avatar-stage-preview-fullscreen" : ""}`}
+      >
+        <button
+          type="button"
+          className="avatar-preview-toggle"
+          onClick={() => {
+            void togglePreviewFullscreen();
+          }}
+          aria-label={previewFullscreen ? "退出全屏预览" : "全屏预览形象"}
+          title={previewFullscreen ? "退出全屏预览（Esc）" : "全屏预览"}
+        >
+          {previewFullscreen ? "退出全屏" : "全屏预览"}
+        </button>
+
+        <canvas ref={canvasRef} id="avatar-canvas" className={`avatar-canvas ${usingLive2D ? "visible" : ""}`} />
 
         {!usingLive2D && (
           <div className={`avatar-loader-shell ${speaking ? "is-speaking" : ""}`}>
@@ -72,6 +147,7 @@ function Avatar2D(props: {
 
 export default function App() {
   const adapterRef = useRef<Live2DDriver | null>(null);
+  const avatarCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const stopLipSyncRef = useRef<(() => void) | null>(null);
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -84,12 +160,16 @@ export default function App() {
   const lastGestureAtRef = useRef(0);
 
   const [personas, setPersonas] = useState<PersonaInfo[]>([]);
-  const [selectedPersona, setSelectedPersona] = useState<string>("general");
+  const [selectedPersona, setSelectedPersona] = useState<string>(() => {
+    if (typeof window === "undefined") return "general";
+    try {
+      return window.localStorage.getItem(PERSONA_STORAGE_KEY) ?? "general";
+    } catch {
+      return "general";
+    }
+  });
   const [sessionId] = useState<string>(() => `session_${Date.now()}`);
-  const [docsInput, setDocsInput] = useState(
-    "React 性能优化优先做拆分、memo、减少无意义重渲染。\nTypeScript 项目中优先给 API 返回体建立显式类型。"
-  );
-  const [question, setQuestion] = useState("怎么系统学习前端工程化？");
+  const [question, setQuestion] = useState("哈啰租电动车有哪些套餐，怎么选最划算？");
   const [answer, setAnswer] = useState("欢迎使用 CloneMe。先上传内容，再开始提问。");
   const [references, setReferences] = useState<string[]>([]);
   const [emotion, setEmotion] = useState<AvatarEmotion>("happy");
@@ -135,16 +215,6 @@ export default function App() {
   });
 
   const loading = initLoading || chatLoading || voiceCloneLoading;
-  const statusLabel = initLoading ? "初始化中" : chatLoading ? "思考中" : isSpeaking ? "播报中" : "待机";
-
-  const docs = useMemo(
-    () =>
-      docsInput
-        .split("\n")
-        .map((item) => item.trim())
-        .filter(Boolean),
-    [docsInput]
-  );
 
   const cleanupPlayback = useCallback(() => {
     if (fallbackTimerRef.current) {
@@ -265,7 +335,17 @@ export default function App() {
     fetchPersonas()
       .then((data) => {
         setPersonas(data.personas);
-        setSelectedPersona(data.defaultPersona);
+        const cachedPersona = (() => {
+          try {
+            return window.localStorage.getItem(PERSONA_STORAGE_KEY);
+          } catch {
+            return null;
+          }
+        })();
+        const hasCachedPersona = cachedPersona
+          ? data.personas.some((persona) => persona.key === cachedPersona)
+          : false;
+        setSelectedPersona(hasCachedPersona ? (cachedPersona as string) : data.defaultPersona);
       })
       .catch(() => {
         // 加载失败使用默认空列表
@@ -273,11 +353,100 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const maybeMode = selectedPersona as PersonaMode;
-    if (selectedPersona in avatarIntroScripts) {
-      void runModeIntro(maybeMode);
+    if (!selectedPersona) return;
+    try {
+      window.localStorage.setItem(PERSONA_STORAGE_KEY, selectedPersona);
+    } catch {
+      // localStorage 不可用时忽略，不影响页面交互。
     }
-  }, [avatarReady, runModeIntro, selectedPersona]);
+  }, [selectedPersona]);
+
+  const resolveIntroMode = useCallback(
+    (personaKey: string): PersonaMode | null => {
+      if (personaKey in avatarIntroScripts) {
+        return personaKey as PersonaMode;
+      }
+
+      // 后端角色 key 可能不是 support，这里对“售前客服”做兜底映射。
+      const matchedPersona = personas.find((item) => item.key === personaKey);
+      const personaText = `${personaKey} ${matchedPersona?.name ?? ""}`.toLowerCase();
+      if (
+        personaText.includes("售前") ||
+        personaText.includes("presale") ||
+        personaText.includes("pre_sale") ||
+        personaText.includes("sales")
+      ) {
+        return "support";
+      }
+
+      return null;
+    },
+    [personas]
+  );
+
+  const resolveLive2DModelUrl = useCallback(
+    (personaKey: string): string => {
+      const matchedPersona = personas.find((item) => item.key === personaKey);
+      const personaText = `${personaKey} ${matchedPersona?.name ?? ""}`.toLowerCase();
+
+      if (personaKey === "general" || personaText.includes("通用") || personaText.includes("general")) {
+        return NATORI_MODEL_URL;
+      }
+
+      if (
+        personaKey === "pre_sales" ||
+        personaKey === "after_sales" ||
+        personaText.includes("售前") ||
+        personaText.includes("售后") ||
+        personaText.includes("support") ||
+        personaText.includes("sales")
+      ) {
+        return HARU_MODEL_URL;
+      }
+
+      return HARU_MODEL_URL;
+    },
+    [personas]
+  );
+
+  const resolveRenderableModelUrl = useCallback(async (preferredModelUrl: string): Promise<string> => {
+    if (preferredModelUrl !== NATORI_MODEL_URL || typeof window === "undefined") {
+      return preferredModelUrl;
+    }
+
+    try {
+      const modelUrl = new URL(preferredModelUrl, window.location.origin);
+      const modelResponse = await fetch(modelUrl.toString(), { cache: "no-store" });
+      if (!modelResponse.ok) {
+        return HARU_MODEL_URL;
+      }
+
+      const modelJson = (await modelResponse.json()) as {
+        FileReferences?: { Moc?: string };
+      };
+      const mocRelativePath = modelJson.FileReferences?.Moc;
+      if (!mocRelativePath) {
+        return HARU_MODEL_URL;
+      }
+
+      const mocUrl = new URL(mocRelativePath, modelUrl);
+      const mocResponse = await fetch(mocUrl.toString(), { cache: "no-store" });
+      if (!mocResponse.ok) {
+        return HARU_MODEL_URL;
+      }
+
+      return preferredModelUrl;
+    } catch {
+      return HARU_MODEL_URL;
+    }
+  }, []);
+
+  useEffect(() => {
+    const introMode = resolveIntroMode(selectedPersona);
+    if (introMode) {
+      void runModeIntro(introMode);
+    }
+  }, [avatarReady, resolveIntroMode, runModeIntro, selectedPersona]);
 
   useEffect(() => {
     if (!(chatLoading && chatPhase === "thinking")) {
@@ -303,13 +472,8 @@ export default function App() {
     });
 
     adapterRef.current = adapter;
-    // 延迟初始化，确保 canvas DOM 已完全挂载
-    const initTimer = setTimeout(() => {
-      void adapter.init("avatar-canvas");
-    }, 100);
 
     return () => {
-      clearTimeout(initTimer);
       stopModeIntro();
       cleanupPlayback();
       stopTypewriter();
@@ -317,6 +481,33 @@ export default function App() {
       adapterRef.current = null;
     };
   }, [cleanupPlayback, stopModeIntro, stopTypewriter]);
+
+  useEffect(() => {
+    const adapter = adapterRef.current;
+    if (!adapter) return;
+    const modelUrl = resolveLive2DModelUrl(selectedPersona);
+    let cancelled = false;
+
+    // 角色切换时触发一次模型重载。
+    setAvatarReady(false);
+    setAvatarRuntimeError(null);
+    const initTimer = setTimeout(() => {
+      void (async () => {
+        await new Promise<void>((resolve) => {
+          requestAnimationFrame(() => resolve());
+        });
+        if (cancelled) return;
+        const renderableModelUrl = await resolveRenderableModelUrl(modelUrl);
+        if (cancelled) return;
+        await adapter.init(avatarCanvasRef.current ?? "avatar-canvas", renderableModelUrl);
+      })();
+    }, 100);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(initTimer);
+    };
+  }, [resolveLive2DModelUrl, resolveRenderableModelUrl, selectedPersona]);
 
   // 初始化 TTS 客户端
   useEffect(() => {
@@ -390,7 +581,7 @@ export default function App() {
       await initAvatarProfile({
         creatorName: "CloneMe Demo 博主",
         domain: "前端工程",
-        docs
+        docs: INTERNAL_KNOWLEDGE_DOCS
       });
       setAnswer("分身初始化完成。现在可以提问，我会按你选的模式回答。");
       setReferences([]);
@@ -403,7 +594,7 @@ export default function App() {
     } finally {
       setInitLoading(false);
     }
-  }, [docs]);
+  }, []);
 
   async function initAvatar() {
     lastActionRef.current = runInitAvatar;
@@ -512,6 +703,16 @@ export default function App() {
     await runCreateVoiceClone();
   }
 
+  const normalizeEmotion = useCallback((value: string | undefined): AvatarEmotion => {
+    if (!value) return "neutral";
+    return (ALL_AVATAR_EMOTIONS as string[]).includes(value) ? (value as AvatarEmotion) : "neutral";
+  }, []);
+
+  const normalizeGesture = useCallback((value: string | undefined): AvatarGesture => {
+    if (!value) return "none";
+    return (ALL_AVATAR_GESTURES as string[]).includes(value) ? (value as AvatarGesture) : "none";
+  }, []);
+
   const runAsk = useCallback(async () => {
     stopModeIntro();
     setChatLoading(true);
@@ -554,6 +755,7 @@ export default function App() {
         persona: selectedPersona,
         sessionId,
         userId,
+        avatarModel: resolveAvatarModelCapability(resolveLive2DModelUrl(selectedPersona)),
         onThinking: () => {
           setChatPhase("thinking");
         },
@@ -579,7 +781,21 @@ export default function App() {
 
       setAnswer(data.reply);
       setReferences(data.references);
-      adapterRef.current?.setEmotion(data.emotion as AvatarEmotion);
+      const modelCapability = resolveAvatarModelCapability(resolveLive2DModelUrl(selectedPersona));
+      const planEmotion = normalizeEmotion(data.avatarPlan?.emotion);
+      const chosenEmotion = modelCapability.allowedEmotions.includes(planEmotion)
+        ? planEmotion
+        : normalizeEmotion(data.emotion);
+      adapterRef.current?.setEmotion(chosenEmotion);
+
+      const candidateGestures = (data.avatarPlan?.gestures ?? [])
+        .map((item) => normalizeGesture(item))
+        .filter((item) => item !== "none");
+      const chosenGesture =
+        candidateGestures.find((item) => modelCapability.allowedGestures.includes(item)) ?? "none";
+      if (chosenGesture !== "none") {
+        adapterRef.current?.playGesture(chosenGesture);
+      }
 
       if (data.audioUrl) {
         try {
@@ -606,7 +822,20 @@ export default function App() {
       setChatPhase("idle");
       setChatLoading(false);
     }
-  }, [cleanupPlayback, selectedPersona, sessionId, userId, playAnswerAudio, playFallbackLipSync, question, stopModeIntro, stopTypewriter]);
+  }, [
+    cleanupPlayback,
+    normalizeEmotion,
+    normalizeGesture,
+    selectedPersona,
+    sessionId,
+    userId,
+    playAnswerAudio,
+    playFallbackLipSync,
+    question,
+    resolveLive2DModelUrl,
+    stopModeIntro,
+    stopTypewriter
+  ]);
 
   async function onAsk(event: FormEvent) {
     event.preventDefault();
@@ -634,16 +863,17 @@ export default function App() {
         <div className="panel-main-content">
           <h1>CloneMe - 知识博主 AI 分身</h1>
           <p className="subtitle">聊天 + 语音驱动口型 + 2D 数字形象（最小可演示版）</p>
-          <p className="status-chip">当前阶段：{statusLabel}</p>
-
-          <label className="block">
-            <span>知识库输入（每行一条）</span>
-            <textarea value={docsInput} onChange={(e) => setDocsInput(e.target.value)} rows={5} />
-          </label>
-
           <button onClick={initAvatar} disabled={loading}>
             {initLoading ? "初始化中..." : "1) 初始化分身"}
           </button>
+
+          <div className="question-guide-box">
+            <h3>引导提问（预留）</h3>
+            <p>这里会放常见问题引导，帮助用户快速开始提问。</p>
+            <p className="question-guide-placeholder">
+              示例：如何开始 / 套餐怎么选 / 租车流程是什么 / 我现在很生气，要投诉你们客服怎么处理（暂未开放）
+            </p>
+          </div>
 
           <div className="mode-row">
             {personas.map((p) => (
@@ -770,12 +1000,14 @@ export default function App() {
 
       <section className="panel panel-avatar panel-avatar-floating">
         <Avatar2D
+          key={selectedPersona}
           speaking={isSpeaking}
           emotion={emotion}
           mouthOpen={mouthOpen}
           ready={avatarReady}
           runtime={runtime}
           runtimeError={avatarRuntimeError}
+          canvasRef={avatarCanvasRef}
         />
         <div className="chat-dialog">
           <div className="chat-dialog-header">

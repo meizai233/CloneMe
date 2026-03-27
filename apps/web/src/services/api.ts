@@ -18,6 +18,11 @@ export interface SmartChatResponse {
   reply: string;
   references: string[];
   emotion: string;
+  avatarPlan?: {
+    emotion?: string;
+    gestures?: string[];
+    reason?: string;
+  };
   audioUrl: string;
   phonemeCues: number[];
   sessionId: string;
@@ -304,6 +309,13 @@ export async function smartChat(payload: {
   persona?: string;
   sessionId?: string;
   userId?: string;
+  avatarModel?: {
+    modelKey: string;
+    modelLabel: string;
+    allowedEmotions: string[];
+    allowedGestures: string[];
+    gestureHints?: Record<string, string>;
+  };
   onDelta?: (fullText: string) => void;
   onDeltaIncrement?: (increment: string) => void;
   onThinking?: () => void;
@@ -351,6 +363,7 @@ export async function smartChat(payload: {
             reply: parsed.reply,
             references: parsed.references ?? [],
             emotion: parsed.emotion ?? "neutral",
+            avatarPlan: parsed.avatarPlan,
             audioUrl: parsed.audioUrl ?? "",
             phonemeCues: parsed.phonemeCues ?? [],
             sessionId: parsed.sessionId,
@@ -370,10 +383,13 @@ export async function smartChat(payload: {
       reply: fullReply || "回复异常",
       references: [],
       emotion: "neutral",
+      avatarPlan: undefined,
       audioUrl: "",
       phonemeCues: [],
+      sessionId: payload.sessionId ?? "default",
+      persona: payload.persona ?? "general",
     };
   }
 
-  return result;
+  return result as SmartChatResponse;
 }
