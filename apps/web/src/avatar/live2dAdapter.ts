@@ -45,7 +45,7 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
     ? Math.min(0.25, Math.max(0, bottomSafeAreaRatioRaw))
     : 0.08;
   const state: Live2DState = {
-    emotion: "neutral",
+    emotion: "happy",
     speaking: false,
     mouthOpen: 0,
     initialized: false,
@@ -73,6 +73,7 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
   let onResize: (() => void) | null = null;
   let baseTransform = { x: 0, y: 0, scale: 1 };
   let initToken = 0;
+  let tickerRegistered = false;
 
   const emit = () => {
     if (!onStateChange) return;
@@ -114,21 +115,25 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
       (live2dModel as unknown as { motion?: (group: string, index: number) => Promise<unknown> | unknown })
         .motion?.("", index);
     };
-    // Prefer model-authored motion so character moves naturally instead of translating the whole sprite.
-    playMotion(0);
+    // Prefer model-authored motions for natural movement. Some models have static index 0,
+    // so alternate short motion clips to keep visible idle dynamics.
+    playMotion(1);
     motionTimer = setInterval(() => {
       const motionIndex = 1 + Math.floor(Math.random() * 26);
       playMotion(motionIndex);
-    }, 6000);
+    }, 5000);
 
     idleTimer = setInterval(() => {
       if (!live2dModel) return;
 
       const t = (Date.now() - startedAt) / 1000;
-      const breathing = (Math.sin(t * 1.7) + 1) * 0.5;
-      const headYaw = Math.sin(t * 0.8) * 4;
-      const headPitch = Math.sin(t * 1.1) * 2.2;
-      const bodyYaw = Math.sin(t * 0.55) * 2;
+      const breathing = (Math.sin(t * 1.5) + 1) * 0.5;
+      const headYaw = Math.sin(t * 0.9) * 8;
+      const headPitch = Math.sin(t * 1.15) * 4;
+      const bodyYaw = Math.sin(t * 0.62) * 5;
+      const bodyLean = Math.sin(t * 0.45) * 2;
+      const eyeBallX = Math.sin(t * 0.7) * 0.35;
+      const eyeBallY = Math.sin(t * 1.1) * 0.18;
 
       setModelParameter("ParamBreath", breathing);
       setModelParameter("PARAM_BREATH", breathing);
@@ -138,6 +143,12 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
       setModelParameter("PARAM_ANGLE_X", headPitch);
       setModelParameter("ParamBodyAngleY", bodyYaw);
       setModelParameter("PARAM_BODY_ANGLE_Y", bodyYaw);
+      setModelParameter("ParamBodyAngleX", bodyLean);
+      setModelParameter("PARAM_BODY_ANGLE_X", bodyLean);
+      setModelParameter("ParamEyeBallX", eyeBallX);
+      setModelParameter("PARAM_EYE_BALL_X", eyeBallX);
+      setModelParameter("ParamEyeBallY", eyeBallY);
+      setModelParameter("PARAM_EYE_BALL_Y", eyeBallY);
 
       // Keep subtle mouth movement while idle; speaking is controlled by lip-sync cues.
       if (!state.speaking) {
@@ -264,13 +275,18 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
       }
 
       try {
-        const [{ Application }, { Live2DModel }] = await Promise.all([
+        const [{ Application, Ticker }, { Live2DModel }] = await Promise.all([
           import("pixi.js"),
           import("pixi-live2d-display/cubism4")
         ]);
 
         if (token !== initToken) {
           return;
+        }
+
+        if (!tickerRegistered && Ticker) {
+          Live2DModel.registerTicker(Ticker);
+          tickerRegistered = true;
         }
 
         cleanupRuntime();
@@ -308,6 +324,7 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
         }
         pixiApp = nextApp;
         live2dModel = nextModel;
+        (live2dModel as unknown as { autoUpdate?: boolean }).autoUpdate = true;
         if (nextApp) {
           nextApp.stage.addChild(nextModel);
           resizeModelToViewport();

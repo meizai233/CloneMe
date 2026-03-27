@@ -85,7 +85,7 @@ export default function App() {
   const [question, setQuestion] = useState("怎么系统学习前端工程化？");
   const [answer, setAnswer] = useState("欢迎使用 CloneMe。先上传内容，再开始提问。");
   const [references, setReferences] = useState<string[]>([]);
-  const [emotion, setEmotion] = useState<AvatarEmotion>("neutral");
+  const [emotion, setEmotion] = useState<AvatarEmotion>("happy");
   const [runtime, setRuntime] = useState<AvatarRuntime>("mock");
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [mouthOpen, setMouthOpen] = useState(0);
