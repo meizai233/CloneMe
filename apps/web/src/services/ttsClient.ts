@@ -223,40 +223,65 @@ export class TTSClient {
 
 /**
  * 句子缓冲器：将流式 token 按标点断句
+ * 优化策略：
+ * 1. 优先在句号/问号/感叹号处断句
+ * 2. 超过 maxLength 时在逗号/分号/换行处强制断句
+ * 3. 超过 hardMaxLength 时在任意位置强制断句
  */
 export class SentenceBuffer {
   private buffer = "";
   private minLength: number;
+  private maxLength: number;
+  private hardMaxLength: number;
   private onSentence: (sentence: string) => void;
 
-  constructor(onSentence: (sentence: string) => void, minLength = 8) {
+  constructor(onSentence: (sentence: string) => void, minLength = 6, maxLength = 40, hardMaxLength = 60) {
     this.onSentence = onSentence;
     this.minLength = minLength;
+    this.maxLength = maxLength;
+    this.hardMaxLength = hardMaxLength;
   }
 
   /**
-   * 追加文本，遇到断句标点时触发回调
+   * 追加文本，按断句规则触发回调
    */
   push(text: string) {
     this.buffer += text;
 
-    // 按句子标点断句
-    const sentenceEnders = /([。！？\n.!?])/;
-    while (true) {
-      const match = this.buffer.match(sentenceEnders);
-      if (!match || match.index === undefined) break;
+    while (this.buffer.length > 0) {
+      let cutIdx = -1;
 
-      const endIdx = match.index + match[0].length;
-      const sentence = this.buffer.slice(0, endIdx).trim();
-      this.buffer = this.buffer.slice(endIdx);
+      // 规则 1：在句号/问号/感叹号/换行处断句
+      const strongMatch = this.buffer.match(/[。！？\n.!?]/);
+      if (strongMatch && strongMatch.index !== undefined) {
+        cutIdx = strongMatch.index + 1;
+      }
+
+      // 规则 2：如果没有强断句符，但超过 maxLength，在逗号/分号/顿号处断句
+      if (cutIdx === -1 && this.buffer.length >= this.maxLength) {
+        const weakMatch = this.buffer.match(/[，,；;、：:]/);
+        if (weakMatch && weakMatch.index !== undefined && weakMatch.index >= this.minLength) {
+          cutIdx = weakMatch.index + 1;
+        }
+      }
+
+      // 规则 3：如果还是没有断句点，但超过 hardMaxLength，强制在 maxLength 处截断
+      if (cutIdx === -1 && this.buffer.length >= this.hardMaxLength) {
+        cutIdx = this.maxLength;
+      }
+
+      if (cutIdx === -1) break; // 没有断句点且长度未超限，等更多文本
+
+      const sentence = this.buffer.slice(0, cutIdx).trim();
+      this.buffer = this.buffer.slice(cutIdx);
 
       // 短句合并到下一句
-      if (sentence.length >= this.minLength) {
-        this.onSentence(sentence);
-      } else {
+      if (sentence.length < this.minLength) {
         this.buffer = sentence + this.buffer;
         break;
       }
+
+      this.onSentence(sentence);
     }
   }
 
