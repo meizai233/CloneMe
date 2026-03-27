@@ -1,4 +1,5 @@
 import { FormEvent, useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import {
   createLive2DAdapter,
   type AvatarEmotion,
@@ -19,6 +20,10 @@ import {
 } from "./services/api";
 import { TTSClient, SentenceBuffer } from "./services/ttsClient";
 import { resolveAvatarModelCapability } from "./avatar/modelCapabilities";
+import {
+  getAvatar, updateAvatar, listVoices, createVoice,
+  type VoiceInfo,
+} from "./services/platform-api";
 
 
 function buildOfflineReply(question: string): string {
@@ -146,6 +151,8 @@ function Avatar2D(props: {
 }
 
 export default function App() {
+  const { id: avatarId } = useParams();
+  const navigate = useNavigate();
   const adapterRef = useRef<Live2DDriver | null>(null);
   const avatarCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -205,6 +212,12 @@ export default function App() {
   const [chatPhase, setChatPhase] = useState<"idle" | "thinking" | "typing">("idle");
   const [thinkingDots, setThinkingDots] = useState("");
 
+  // 声音选择：克隆 vs 已有声音，互斥
+  const [voiceMode, setVoiceMode] = useState<"clone" | "existing">("clone");
+  const [existingVoices, setExistingVoices] = useState<VoiceInfo[]>([]);
+  const [avatarName, setAvatarName] = useState("");
+  const [saveMsg, setSaveMsg] = useState("");
+
   // 每次页面加载生成新的 userId，刷新页面后自动更换
   const [userId] = useState(() => {
     // crypto.randomUUID 仅在安全上下文（HTTPS/localhost）可用，降级使用 Math.random
@@ -215,6 +228,34 @@ export default function App() {
   });
 
   const loading = initLoading || chatLoading || voiceCloneLoading;
+
+  // 加载数字人信息和已有声音列表
+  useEffect(() => {
+    if (avatarId) {
+      getAvatar(avatarId).then(res => {
+        const a = res.avatar;
+        setAvatarName(a.name);
+        if (a.voice_id) { setVoiceId(a.voice_id); setVoiceMode("existing"); }
+      }).catch(() => {});
+    }
+    listVoices().then(res => setExistingVoices(res.voices || [])).catch(() => {});
+  }, [avatarId]);
+
+  // 保存数字人配置
+  async function onSaveAvatar() {
+    if (!avatarId) return;
+    setSaveMsg("");
+    try {
+      await updateAvatar(avatarId, {
+        name: avatarName || undefined,
+        voice_id: voiceId || undefined,
+      } as any);
+      setSaveMsg("保存成功");
+      setTimeout(() => setSaveMsg(""), 2000);
+    } catch (err) {
+      setSaveMsg(err instanceof Error ? err.message : "保存失败");
+    }
+  }
 
   const cleanupPlayback = useCallback(() => {
     if (fallbackTimerRef.current) {
@@ -687,6 +728,16 @@ export default function App() {
         targetModel: targetModel.trim() || "cosyvoice-v2"
       });
       setVoiceId(data.voiceId);
+      // 同时保存到声音工坊（通过平台 API 存入数据库）
+      try {
+        await createVoice(safeAudioUrl, (speakerName.trim() || "cloneme").slice(0, 10), speakerName.trim() || "我的音色", targetModel.trim() || "cosyvoice-v2");
+        const voicesRes = await listVoices();
+        setExistingVoices(voicesRes.voices || []);
+      } catch { /* 保存到声音工坊失败不影响主流程 */ }
+      // 自动绑定到当前数字人
+      if (avatarId) {
+        try { await updateAvatar(avatarId, { voice_id: data.voiceId } as any); } catch { /* 忽略 */ }
+      }
       setAnswer("音色创建完成。现在提问时将优先使用克隆语音播报。");
       setReferences([]);
       adapterRef.current?.setEmotion("happy");
@@ -864,6 +915,21 @@ export default function App() {
           {leftPanelCollapsed ? "›" : "‹"}
         </button>
         <div className="panel-main-content">
+          {/* 顶部操作栏：返回 + 名称 + 保存 */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+            <button onClick={() => navigate("/dashboard")} style={{ background: "none", border: "none", color: "#6b7ff5", cursor: "pointer", fontSize: "0.9rem", padding: 0, margin: 0 }}>← 返回</button>
+            <input
+              value={avatarName}
+              onChange={(e) => setAvatarName(e.target.value)}
+              placeholder="数字人名称"
+              style={{ flex: 1, padding: "6px 10px", borderRadius: 8, border: "1px solid #37457f", background: "#101632", color: "#f4f6ff", fontSize: "0.95rem" }}
+            />
+            <button onClick={onSaveAvatar} disabled={loading} style={{ padding: "6px 14px", borderRadius: 8, background: "#4059d4", color: "#fff", border: "none", cursor: "pointer", fontSize: "0.85rem" }}>
+              💾 保存
+            </button>
+          </div>
+          {saveMsg && <p style={{ fontSize: "0.8rem", color: saveMsg === "保存成功" ? "#4caf50" : "#e53935", margin: "0 0 8px" }}>{saveMsg}</p>}
+
           <h1>CloneMe - 知识博主 AI 分身</h1>
           <p className="subtitle">聊天 + 语音驱动口型 + 2D 数字形象（最小可演示版）</p>
           <button onClick={initAvatar} disabled={loading}>
@@ -894,84 +960,121 @@ export default function App() {
           </div>
 
           <div className="voice-clone-box">
-            <h3>语音克隆</h3>
-            <label className="block">
-              <span>音色名称</span>
-              <input
-                value={speakerName}
-                onChange={(e) => setSpeakerName(e.target.value)}
-                placeholder="例如：我的播客音色"
-              />
-            </label>
-
-            <div className="recording-section">
-              <span>录制语音样本（建议 10~20 秒）</span>
-              <div className="recording-prompt-tooltip">
-                <span className="recording-prompt-trigger">📖 查看参考朗读文本</span>
-                <div className="recording-prompt-popup">
-                  各位观众朋友大家好，欢迎收看本期节目。今天我们将深入探讨人工智能技术在日常生活中的应用与发展趋势。从智能语音助手到自动驾驶，从医疗诊断到金融风控，AI 正在以前所未有的速度改变着我们的世界。接下来，让我们一起走进这个充满无限可能的科技新时代。
-                </div>
-              </div>
-              <div className="recording-controls">
-                {!isRecording ? (
-                  <button onClick={startRecording} disabled={loading} type="button">
-                    🎙️ 开始录音
-                  </button>
-                ) : (
-                  <button onClick={stopRecording} type="button" className="recording-active">
-                    ⏹️ 停止录音 ({recordingDuration}s)
-                  </button>
-                )}
-                {uploadedAudioUrl && (
-                  <span className="upload-status">✅ 录音已上传</span>
-                )}
-              </div>
-              <p className="voice-hint">
-                或直接输入音频 URL：
-              </p>
-              <input
-                value={sampleAudioUrl}
-                onChange={(e) => setSampleAudioUrl(e.target.value)}
-                placeholder="https://example.com/sample.wav"
-              />
+            <h3>声音设置</h3>
+            {/* 互斥切换：克隆 vs 已有 */}
+            <div className="mode-row" style={{ marginBottom: 10 }}>
+              <button className={voiceMode === "clone" ? "active" : ""} onClick={() => setVoiceMode("clone")} disabled={loading}>🎙️ 克隆新声音</button>
+              <button className={voiceMode === "existing" ? "active" : ""} onClick={() => setVoiceMode("existing")} disabled={loading}>📋 选择已有声音</button>
             </div>
 
-            <label className="block">
-              <span>目标模型</span>
-              <input
-                value={targetModel}
-                onChange={(e) => setTargetModel(e.target.value)}
-                placeholder="cosyvoice-v2"
-              />
-            </label>
-            <label className="consent-row">
-              <input
-                type="checkbox"
-                checked={consentConfirmed}
-                onChange={(e) => setConsentConfirmed(e.target.checked)}
-              />
-              <span>我确认已获本人授权用于语音克隆</span>
-            </label>
-            <button onClick={onCreateVoiceClone} disabled={loading}>
-              {voiceCloneLoading ? "创建音色中..." : "2) 创建克隆音色"}
-            </button>
+            {voiceMode === "clone" && (
+              <>
+                <label className="block">
+                  <span>音色名称</span>
+                  <input
+                    value={speakerName}
+                    onChange={(e) => setSpeakerName(e.target.value)}
+                    placeholder="例如：我的播客音色"
+                  />
+                </label>
+
+                <div className="recording-section">
+                  <span>录制语音样本（建议 10~20 秒）</span>
+                  <div className="recording-prompt-tooltip">
+                    <span className="recording-prompt-trigger">📖 查看参考朗读文本</span>
+                    <div className="recording-prompt-popup">
+                      各位观众朋友大家好，欢迎收看本期节目。今天我们将深入探讨人工智能技术在日常生活中的应用与发展趋势。从智能语音助手到自动驾驶，从医疗诊断到金融风控，AI 正在以前所未有的速度改变着我们的世界。接下来，让我们一起走进这个充满无限可能的科技新时代。
+                    </div>
+                  </div>
+                  <div className="recording-controls">
+                    {!isRecording ? (
+                      <button onClick={startRecording} disabled={loading} type="button">
+                        🎙️ 开始录音
+                      </button>
+                    ) : (
+                      <button onClick={stopRecording} type="button" className="recording-active">
+                        ⏹️ 停止录音 ({recordingDuration}s)
+                      </button>
+                    )}
+                    {uploadedAudioUrl && (
+                      <span className="upload-status">✅ 录音已上传</span>
+                    )}
+                  </div>
+                  <p className="voice-hint">或直接输入音频 URL：</p>
+                  <input
+                    value={sampleAudioUrl}
+                    onChange={(e) => setSampleAudioUrl(e.target.value)}
+                    placeholder="https://example.com/sample.wav"
+                  />
+                </div>
+
+                <label className="consent-row">
+                  <input
+                    type="checkbox"
+                    checked={consentConfirmed}
+                    onChange={(e) => setConsentConfirmed(e.target.checked)}
+                  />
+                  <span>我确认已获本人授权用于语音克隆</span>
+                </label>
+                <button onClick={onCreateVoiceClone} disabled={loading}>
+                  {voiceCloneLoading ? "创建音色中..." : "🎵 开始克隆"}
+                </button>
+              </>
+            )}
+
+            {voiceMode === "existing" && (
+              <div style={{ maxHeight: 240, overflowY: "auto" }}>
+                {existingVoices.length === 0 ? (
+                  <p className="voice-hint">暂无已有声音，请先克隆一个</p>
+                ) : (
+                  existingVoices.map(v => (
+                    <div
+                      key={v.voice_id}
+                      onClick={() => {
+                        setVoiceId(v.voice_id);
+                        if (avatarId) { updateAvatar(avatarId, { voice_id: v.voice_id } as any).catch(() => {}); }
+                      }}
+                      style={{
+                        display: "flex", alignItems: "center", justifyContent: "space-between",
+                        padding: "8px 10px", marginBottom: 6, borderRadius: 8, cursor: "pointer",
+                        border: voiceId === v.voice_id ? "1px solid #4059d4" : "1px solid #2c355f",
+                        background: voiceId === v.voice_id ? "rgba(64,89,212,0.1)" : "#131a3f",
+                      }}
+                    >
+                      <div>
+                        <div style={{ fontSize: "0.85rem", color: "#e7ebff" }}>{v.speaker_name || v.voice_id}</div>
+                        <div style={{ fontSize: "0.7rem", color: "#5a6080" }}>{v.created_at || ""}</div>
+                      </div>
+                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        {v.audio_url && (
+                          <button type="button" onClick={(e) => { e.stopPropagation(); new Audio(v.audio_url).play(); }} style={{ fontSize: "0.75rem", padding: "3px 8px", borderRadius: 6, border: "1px solid #4059d4", background: "rgba(64,89,212,0.1)", color: "#6b7ff5", cursor: "pointer" }}>▶</button>
+                        )}
+                        {voiceId === v.voice_id && <span style={{ fontSize: "0.7rem", color: "#4caf50" }}>✓ 当前</span>}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+
+            <p className="voice-hint">
+              {voiceId
+                ? `当前音色：${voiceId}`
+                : "未选择音色"}
+            </p>
             {voiceId && (
               <button
                 type="button"
                 onClick={() => {
                   setVoiceId(null);
                   setVoiceLatency(null);
+                  if (avatarId) { updateAvatar(avatarId, { voice_id: "" } as any).catch(() => {}); }
                 }}
                 disabled={loading}
               >
                 清除音色
               </button>
             )}
-            <p className="voice-hint">
-              {voiceId
-                ? `音色已就绪：${voiceId}`
-                : "未创建音色：创建时将调用后端 /api/voice/create"}
-            </p>
             {voiceLatency && (
               <p className="voice-metrics">
                 合成延迟：首包 {voiceLatency.firstByteMs}ms / 全量 {voiceLatency.totalMs}ms /{" "}

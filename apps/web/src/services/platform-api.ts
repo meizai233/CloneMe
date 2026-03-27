@@ -137,3 +137,74 @@ export async function listAvailableModels() {
 export async function listAllModels() {
   return request<{ models: Live2DModel[] }>("/api/models");
 }
+
+
+// ========== 管理员模型管理 ==========
+
+export async function listAdminModels() {
+  return request<{ models: Live2DModel[] }>("/api/models/admin/all");
+}
+
+export async function createModel(data: Partial<Live2DModel>) {
+  return request<{ id: string; message: string }>("/api/models/admin", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function updateModel(id: string, data: Partial<Live2DModel>) {
+  return request<{ message: string }>(`/api/models/admin/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function setModelStatus(id: string, status: "active" | "disabled") {
+  return request<{ message: string }>(`/api/models/admin/${id}/status`, {
+    method: "PUT",
+    body: JSON.stringify({ status }),
+  });
+}
+
+export async function deleteModel(id: string) {
+  return request<{ message: string }>(`/api/models/admin/${id}`, { method: "DELETE" });
+}
+
+// ========== 声音管理 ==========
+
+export interface VoiceInfo {
+  id: string;
+  voice_id: string;
+  speaker_name: string;
+  audio_url: string;
+  status: string;
+  created_at?: string;
+}
+
+export async function listVoices(prefix?: string) {
+  const qs = prefix ? `?prefix=${encodeURIComponent(prefix)}` : "";
+  return request<{ voices: VoiceInfo[] }>(`/api/voice/list${qs}`);
+}
+
+export async function createVoice(audioUrl: string, prefix: string, speakerName: string, targetModel?: string) {
+  return request<{ voiceId: string }>("/api/voice/create", {
+    method: "POST",
+    body: JSON.stringify({ audioUrl, prefix, speakerName, targetModel }),
+  });
+}
+
+export async function deleteVoice(voiceId: string) {
+  return request<{ message: string }>(`/api/voice/${voiceId}`, { method: "DELETE" });
+}
+
+export async function uploadAudioFile(base64Data: string, fileName: string) {
+  return request<{ audioUrl: string }>("/api/upload/audio", {
+    method: "POST",
+    body: JSON.stringify({ audioData: base64Data, fileName }),
+  });
+}
+
+export function getFullUploadUrl(path: string): string {
+  if (path.startsWith("http")) return path;
+  return `${API_BASE}${path}`;
+}

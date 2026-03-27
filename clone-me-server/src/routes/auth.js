@@ -30,15 +30,17 @@ router.post('/register', (req, res) => {
     const tenantId = uuid();
     db.prepare('INSERT INTO tenants (id, name) VALUES (?, ?)').run(tenantId, tenantName || `${name}的团队`);
 
-    // 创建用户
+    // 创建用户（第一个注册的用户自动成为管理员）
     const userId = uuid();
     const passwordHash = bcrypt.hashSync(password, 10);
+    const userCount = db.prepare('SELECT count(*) as cnt FROM users').get();
+    const role = userCount.cnt === 0 ? 'admin' : 'user';
     db.prepare('INSERT INTO users (id, email, password_hash, name, tenant_id, role) VALUES (?, ?, ?, ?, ?, ?)').run(
-      userId, email, passwordHash, name, tenantId, 'user'
+      userId, email, passwordHash, name, tenantId, role
     );
 
-    const token = signToken({ userId, tenantId, role: 'user', email });
-    res.json({ token, user: { id: userId, email, name, role: 'user', tenantId } });
+    const token = signToken({ userId, tenantId, role, email });
+    res.json({ token, user: { id: userId, email, name, role, tenantId } });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

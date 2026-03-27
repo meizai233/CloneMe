@@ -99,6 +99,17 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_active_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  -- 克隆声音表
+  CREATE TABLE IF NOT EXISTS voices (
+    id TEXT PRIMARY KEY,
+    voice_id TEXT NOT NULL,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    speaker_name TEXT DEFAULT '',
+    audio_url TEXT DEFAULT '',
+    status TEXT DEFAULT 'active',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 export default db;
