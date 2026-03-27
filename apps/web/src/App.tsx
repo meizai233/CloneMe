@@ -7,7 +7,7 @@ import {
 } from "./avatar/live2dAdapter";
 import {
   chatWithAvatar,
-  createVoiceCloneProfile,
+  createVoiceClone,
   initAvatarProfile,
   type PersonaMode
 } from "./services/api";
@@ -97,12 +97,8 @@ export default function App() {
   const [voiceId, setVoiceId] = useState<string | null>(null);
   const [consentConfirmed, setConsentConfirmed] = useState(false);
   const [speakerName, setSpeakerName] = useState("我的音色");
-  const [sampleFile, setSampleFile] = useState<File | null>(null);
-  const [voiceMetrics, setVoiceMetrics] = useState<{
-    durationSec: number;
-    snrDb: number;
-    silenceRatio: number;
-  } | null>(null);
+  const [sampleAudioUrl, setSampleAudioUrl] = useState("");
+  const [targetModel, setTargetModel] = useState("cosyvoice-v2");
   const [voiceLatency, setVoiceLatency] = useState<{
     firstByteMs: number;
     totalMs: number;
@@ -201,22 +197,6 @@ export default function App() {
     [cleanupPlayback]
   );
 
-  const fileToBase64 = useCallback((file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const result = reader.result;
-        if (typeof result !== "string") {
-          reject(new Error("音频读取失败"));
-          return;
-        }
-        resolve(result);
-      };
-      reader.onerror = () => reject(new Error("音频读取失败"));
-      reader.readAsDataURL(file);
-    });
-  }, []);
-
   const runInitAvatar = useCallback(async () => {
     setInitLoading(true);
     setErrorMessage(null);
@@ -254,26 +234,28 @@ export default function App() {
       setErrorMessage("请先确认已获本人授权，再创建音色。");
       return;
     }
-    if (!sampleFile) {
+    const safeAudioUrl = sampleAudioUrl.trim();
+    if (!safeAudioUrl) {
       setVoiceCloneLoading(false);
-      setErrorMessage("请先上传 30 秒以上 WAV 音频样本。");
+      setErrorMessage("请先填写可公网访问的音频 URL。");
       return;
     }
-    if (!sampleFile.name.toLowerCase().endsWith(".wav")) {
+    try {
+      // Validate URL format before sending request to backend.
+      new URL(safeAudioUrl);
+    } catch {
       setVoiceCloneLoading(false);
-      setErrorMessage("当前仅支持 WAV 样本，请重新上传。");
+      setErrorMessage("音频 URL 格式不正确，请输入完整链接（http/https）。");
       return;
     }
 
     try {
-      const sampleAudioBase64 = await fileToBase64(sampleFile);
-      const data = await createVoiceCloneProfile({
-        speakerName: speakerName.trim() || "我的音色",
-        consentConfirmed: true,
-        sampleAudioBase64
+      const data = await createVoiceClone({
+        audioUrl: safeAudioUrl,
+        prefix: (speakerName.trim() || "cloneme").slice(0, 10),
+        targetModel: targetModel.trim() || "cosyvoice-v2"
       });
       setVoiceId(data.voiceId);
-      setVoiceMetrics(data.metrics);
       setAnswer("音色创建完成。现在提问时将优先使用克隆语音播报。");
       setReferences([]);
       adapterRef.current?.setEmotion("happy");
@@ -283,9 +265,9 @@ export default function App() {
     } finally {
       setVoiceCloneLoading(false);
     }
-  }, [consentConfirmed, fileToBase64, sampleFile, speakerName]);
+  }, [consentConfirmed, sampleAudioUrl, speakerName, targetModel]);
 
-  async function createVoiceClone() {
+  async function onCreateVoiceClone() {
     lastActionRef.current = runCreateVoiceClone;
     await runCreateVoiceClone();
   }
@@ -403,11 +385,19 @@ export default function App() {
               />
             </label>
             <label className="block">
-              <span>上传语音样本（WAV，建议 30s~3min）</span>
+              <span>语音样本 URL（公网可访问，建议 10~20 秒）</span>
               <input
-                type="file"
-                accept=".wav,audio/wav"
-                onChange={(e) => setSampleFile(e.target.files?.[0] ?? null)}
+                value={sampleAudioUrl}
+                onChange={(e) => setSampleAudioUrl(e.target.value)}
+                placeholder="https://example.com/sample.wav"
+              />
+            </label>
+            <label className="block">
+              <span>目标模型</span>
+              <input
+                value={targetModel}
+                onChange={(e) => setTargetModel(e.target.value)}
+                placeholder="cosyvoice-v2"
               />
             </label>
             <label className="consent-row">
@@ -418,7 +408,7 @@ export default function App() {
               />
               <span>我确认已获本人授权用于语音克隆</span>
             </label>
-            <button onClick={createVoiceClone} disabled={loading}>
+            <button onClick={onCreateVoiceClone} disabled={loading}>
               {voiceCloneLoading ? "创建音色中..." : "2) 创建克隆音色"}
             </button>
             {voiceId && (
@@ -426,7 +416,6 @@ export default function App() {
                 type="button"
                 onClick={() => {
                   setVoiceId(null);
-                  setVoiceMetrics(null);
                   setVoiceLatency(null);
                 }}
                 disabled={loading}
@@ -437,14 +426,8 @@ export default function App() {
             <p className="voice-hint">
               {voiceId
                 ? `音色已就绪：${voiceId}`
-                : "未创建音色：提问时将使用默认语音占位或口型兜底"}
+                : "未创建音色：创建时将调用后端 /api/voice/create"}
             </p>
-            {voiceMetrics && (
-              <p className="voice-metrics">
-                质量指标：时长 {voiceMetrics.durationSec.toFixed(1)}s / SNR{" "}
-                {voiceMetrics.snrDb.toFixed(1)}dB / 静音 {(voiceMetrics.silenceRatio * 100).toFixed(1)}%
-              </p>
-            )}
             {voiceLatency && (
               <p className="voice-metrics">
                 合成延迟：首包 {voiceLatency.firstByteMs}ms / 全量 {voiceLatency.totalMs}ms /{" "}

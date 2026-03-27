@@ -69,8 +69,10 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
     | null = null;
   let timer: ReturnType<typeof setInterval> | null = null;
   let idleTimer: ReturnType<typeof setInterval> | null = null;
+  let motionTimer: ReturnType<typeof setInterval> | null = null;
   let onResize: (() => void) | null = null;
   let baseTransform = { x: 0, y: 0, scale: 1 };
+  let initToken = 0;
 
   const emit = () => {
     if (!onStateChange) return;
@@ -98,28 +100,31 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
       clearInterval(idleTimer);
       idleTimer = null;
     }
+    if (motionTimer) {
+      clearInterval(motionTimer);
+      motionTimer = null;
+    }
   };
 
   const startIdleMotion = () => {
     stopIdleMotion();
 
     const startedAt = Date.now();
+    const playMotion = (index: number) => {
+      (live2dModel as unknown as { motion?: (group: string, index: number) => Promise<unknown> | unknown })
+        .motion?.("", index);
+    };
+    // Prefer model-authored motion so character moves naturally instead of translating the whole sprite.
+    playMotion(0);
+    motionTimer = setInterval(() => {
+      const motionIndex = 1 + Math.floor(Math.random() * 26);
+      playMotion(motionIndex);
+    }, 6000);
+
     idleTimer = setInterval(() => {
       if (!live2dModel) return;
 
       const t = (Date.now() - startedAt) / 1000;
-      // Always-visible idle transform. This works even when a specific model lacks some Param* ids.
-      const floatY = Math.sin(t * 1.1) * 2.2;
-      const swayX = Math.sin(t * 0.65) * 1.8;
-      const swayRot = Math.sin(t * 0.52) * 0.012;
-      const breathScale = 1 + Math.sin(t * 1.7) * 0.01;
-      live2dModel.x = baseTransform.x + swayX;
-      live2dModel.y = baseTransform.y + floatY;
-      live2dModel.scale.set(baseTransform.scale * breathScale);
-      if ("rotation" in live2dModel) {
-        live2dModel.rotation = swayRot;
-      }
-
       const breathing = (Math.sin(t * 1.7) + 1) * 0.5;
       const headYaw = Math.sin(t * 0.8) * 4;
       const headPitch = Math.sin(t * 1.1) * 2.2;
@@ -225,8 +230,21 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
     emit();
   };
 
+  const cleanupRuntime = () => {
+    stopIdleMotion();
+    stopLipSync();
+    if (onResize && typeof window !== "undefined") {
+      window.removeEventListener("resize", onResize);
+    }
+    onResize = null;
+    live2dModel = null;
+    pixiApp?.destroy(true);
+    pixiApp = null;
+  };
+
   return {
     async init(canvasId) {
+      const token = ++initToken;
       const canvas =
         canvasId && typeof document !== "undefined"
           ? (document.getElementById(canvasId) as HTMLCanvasElement | null)
@@ -251,6 +269,12 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
           import("pixi-live2d-display/cubism4")
         ]);
 
+        if (token !== initToken) {
+          return;
+        }
+
+        cleanupRuntime();
+
         const devicePixelRatio =
           typeof window !== "undefined" ? Math.min(window.devicePixelRatio || 1, 2) : 1;
         const appOptions = {
@@ -262,23 +286,30 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
           autoDensity: true
         };
 
+        let nextApp: any = null;
         try {
-          pixiApp = new Application({
+          nextApp = new Application({
             view: canvas,
             ...appOptions
           } as never);
         } catch {
-          pixiApp = new Application();
-          const appWithInit = pixiApp as unknown as { init?: (options: unknown) => Promise<void> };
+          nextApp = new Application();
+          const appWithInit = nextApp as unknown as { init?: (options: unknown) => Promise<void> };
           await appWithInit.init?.({
             canvas,
             ...appOptions
           });
         }
 
-        live2dModel = await Live2DModel.from(modelUrl, { autoInteract: false });
-        if (pixiApp) {
-          pixiApp.stage.addChild(live2dModel);
+        const nextModel = await Live2DModel.from(modelUrl, { autoInteract: false });
+        if (token !== initToken) {
+          nextApp?.destroy(true);
+          return;
+        }
+        pixiApp = nextApp;
+        live2dModel = nextModel;
+        if (nextApp) {
+          nextApp.stage.addChild(nextModel);
           resizeModelToViewport();
           if (typeof window !== "undefined") {
             window.requestAnimationFrame(() => resizeModelToViewport());
@@ -336,17 +367,10 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
       return stopLipSync;
     },
     destroy() {
-      stopIdleMotion();
-      stopLipSync();
-      if (onResize && typeof window !== "undefined") {
-        window.removeEventListener("resize", onResize);
-      }
-      onResize = null;
+      initToken += 1;
+      cleanupRuntime();
       state.speaking = false;
       state.initialized = false;
-      live2dModel = null;
-      pixiApp?.destroy(true);
-      pixiApp = null;
       emit();
     }
   };
