@@ -18,6 +18,7 @@ import {
   type PersonaInfo
 } from "./services/api";
 import { TTSClient, SentenceBuffer } from "./services/ttsClient";
+import { resolveAvatarModelCapability } from "./avatar/modelCapabilities";
 
 
 function buildOfflineReply(question: string): string {
@@ -32,6 +33,27 @@ const INTERNAL_KNOWLEDGE_DOCS = [
 const HARU_MODEL_URL = "/models/haru_greeter_pro_jp/runtime/haru_greeter_t05.model3.json";
 const NATORI_MODEL_URL = "/models/natori_pro_zh/runtime/natori_pro_t06.model3.json";
 const PERSONA_STORAGE_KEY = "cloneme.selectedPersona";
+const ALL_AVATAR_EMOTIONS: AvatarEmotion[] = [
+  "neutral",
+  "happy",
+  "thinking",
+  "excited",
+  "confident",
+  "warm",
+  "serious",
+  "surprised",
+];
+const ALL_AVATAR_GESTURES: AvatarGesture[] = [
+  "none",
+  "nod",
+  "emphasis",
+  "thinking",
+  "clap",
+  "openArms",
+  "promoPitch",
+  "discountHighlight",
+  "comfortExplain",
+];
 
 function Avatar2D(props: {
   speaking: boolean;
@@ -147,7 +169,7 @@ export default function App() {
     }
   });
   const [sessionId] = useState<string>(() => `session_${Date.now()}`);
-  const [question, setQuestion] = useState("怎么系统学习前端工程化？");
+  const [question, setQuestion] = useState("哈啰租电动车有哪些套餐，怎么选最划算？");
   const [answer, setAnswer] = useState("欢迎使用 CloneMe。先上传内容，再开始提问。");
   const [references, setReferences] = useState<string[]>([]);
   const [emotion, setEmotion] = useState<AvatarEmotion>("happy");
@@ -675,6 +697,16 @@ export default function App() {
     await runCreateVoiceClone();
   }
 
+  const normalizeEmotion = useCallback((value: string | undefined): AvatarEmotion => {
+    if (!value) return "neutral";
+    return (ALL_AVATAR_EMOTIONS as string[]).includes(value) ? (value as AvatarEmotion) : "neutral";
+  }, []);
+
+  const normalizeGesture = useCallback((value: string | undefined): AvatarGesture => {
+    if (!value) return "none";
+    return (ALL_AVATAR_GESTURES as string[]).includes(value) ? (value as AvatarGesture) : "none";
+  }, []);
+
   const runAsk = useCallback(async () => {
     stopModeIntro();
     setChatLoading(true);
@@ -717,6 +749,7 @@ export default function App() {
         persona: selectedPersona,
         sessionId,
         userId,
+        avatarModel: resolveAvatarModelCapability(resolveLive2DModelUrl(selectedPersona)),
         onThinking: () => {
           setChatPhase("thinking");
         },
@@ -742,7 +775,21 @@ export default function App() {
 
       setAnswer(data.reply);
       setReferences(data.references);
-      adapterRef.current?.setEmotion(data.emotion as AvatarEmotion);
+      const modelCapability = resolveAvatarModelCapability(resolveLive2DModelUrl(selectedPersona));
+      const planEmotion = normalizeEmotion(data.avatarPlan?.emotion);
+      const chosenEmotion = modelCapability.allowedEmotions.includes(planEmotion)
+        ? planEmotion
+        : normalizeEmotion(data.emotion);
+      adapterRef.current?.setEmotion(chosenEmotion);
+
+      const candidateGestures = (data.avatarPlan?.gestures ?? [])
+        .map((item) => normalizeGesture(item))
+        .filter((item) => item !== "none");
+      const chosenGesture =
+        candidateGestures.find((item) => modelCapability.allowedGestures.includes(item)) ?? "none";
+      if (chosenGesture !== "none") {
+        adapterRef.current?.playGesture(chosenGesture);
+      }
 
       if (data.audioUrl) {
         try {
@@ -769,7 +816,20 @@ export default function App() {
       setChatPhase("idle");
       setChatLoading(false);
     }
-  }, [cleanupPlayback, selectedPersona, sessionId, userId, playAnswerAudio, playFallbackLipSync, question, stopModeIntro, stopTypewriter]);
+  }, [
+    cleanupPlayback,
+    normalizeEmotion,
+    normalizeGesture,
+    selectedPersona,
+    sessionId,
+    userId,
+    playAnswerAudio,
+    playFallbackLipSync,
+    question,
+    resolveLive2DModelUrl,
+    stopModeIntro,
+    stopTypewriter
+  ]);
 
   async function onAsk(event: FormEvent) {
     event.preventDefault();
