@@ -449,8 +449,11 @@ export default function App() {
 
             <div className="recording-section">
               <span>录制语音样本（建议 10~20 秒）</span>
-              <div className="recording-prompt-text">
-                📖 参考朗读文本：「各位观众朋友大家好，欢迎收看本期节目。今天我们将深入探讨人工智能技术在日常生活中的应用与发展趋势。从智能语音助手到自动驾驶，从医疗诊断到金融风控，AI 正在以前所未有的速度改变着我们的世界。接下来，让我们一起走进这个充满无限可能的科技新时代。」
+              <div className="recording-prompt-tooltip">
+                <span className="recording-prompt-trigger">📖 查看参考朗读文本</span>
+                <div className="recording-prompt-popup">
+                  各位观众朋友大家好，欢迎收看本期节目。今天我们将深入探讨人工智能技术在日常生活中的应用与发展趋势。从智能语音助手到自动驾驶，从医疗诊断到金融风控，AI 正在以前所未有的速度改变着我们的世界。接下来，让我们一起走进这个充满无限可能的科技新时代。
+                </div>
               </div>
               <div className="recording-controls">
                 {!isRecording ? (
