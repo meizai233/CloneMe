@@ -9,12 +9,12 @@
 ## Tech Stack
 
 - `apps/web`: React + Vite + TypeScript
-- `apps/server`: Node.js + Express + TypeScript
+- `clone-me-server`: Node.js + Express
 
 ## Quick Start
 
 ```bash
-cp .env.example .env
+cp apps/web/.env.example apps/web/.env
 npm install
 npm run dev
 ```
@@ -25,29 +25,21 @@ Open:
 
 ## Current API
 
-- `POST /api/avatar/init`
-  - body: `{ creatorName, domain, docs: string[] }`
+- `GET /api/health`
 - `POST /api/chat`
-  - body: `{ userQuestion, mode: "teacher" | "friend" | "support", voiceId? }`
-  - returns: `{ reply, references, emotion, audioUrl, phonemeCues, latency? }`
-  - note: when `voiceId` is provided, server tries third-party cloned TTS first; timeout retries once and falls back to text+lip-sync cues
-- `POST /api/voice-clone/profile`
-  - body: `{ speakerName?, consentConfirmed: true, sampleAudioBase64 }`
-  - returns: `{ voiceId, metrics: { durationSec, snrDb, silenceRatio } }`
-  - quality gate: duration/SNR/silence ratio are validated server-side
-- `POST /api/voice-clone/synthesize`
-  - body: `{ voiceId, text, style? }`
-  - returns: `{ audioUrl, latency: { firstByteMs, totalMs, meetsTarget } }`
-  - abuse guard: sensitive text filter + in-memory rate limit + audit log
+- `POST /api/chat/stream` (SSE)
+- `POST /api/image/generate`
+- `POST /api/video/create`
+- `GET /api/video/task/:id`
+- `POST /api/embedding`
+- `WS /ws/tts`
+- `WS /ws/asr`
 
 ## Voice Clone Setup
 
-1. Copy `.env.example` to `.env`.
-2. Fill `TTS_API_KEY` and `TTS_API_URL`.
-3. Adjust provider paths if your platform differs:
-   - `TTS_VOICE_CLONE_PROFILE_PATH`
-   - `TTS_VOICE_CLONE_SYNTH_PATH`
-4. Run `npm run dev`, upload a WAV sample in web UI, create `voiceId`, then ask questions.
+1. Copy `apps/web/.env.example` to `apps/web/.env`.
+2. Ensure `VITE_API_BASE_URL` points to your running backend (default `http://localhost:3001`).
+3. Start services with `npm run dev`.
 
 ## Demo Flow
 

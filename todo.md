@@ -18,16 +18,16 @@
 
 - 模块：AI 对话
   - 技术：`平台 LLM`
-  - 落点文件：`apps/server/src/services/persona.ts`、`apps/server/src/services/llm.ts`（新增）
+  - 落点文件：`clone-me-server/src/routes/chat.js`、`clone-me-server/src/services/llm.js`
 - 模块：TTS
   - 技术：`平台 TTS`
-  - 落点文件：`apps/server/src/services/tts.ts`
+  - 落点文件：`clone-me-server/src/services/tts.js`
 - 模块：RAG
   - 技术：`平台 RAG API`
-  - 落点文件：`apps/server/src/services/rag.ts`
+  - 落点文件：`clone-me-server/src/routes/embedding.js`
 - 模块：Memory
   - 技术：`平台 Memory API`
-  - 落点文件：`apps/server/src/services/memory.ts`（新增）
+  - 落点文件：`clone-me-server/src/routes/chat.js`
 - 模块：数字人
   - 技术：`Live2D Cubism`
   - 落点文件：`apps/web/src/avatar/live2dAdapter.ts`
@@ -36,7 +36,7 @@
   - 落点文件：`apps/web/src/App.tsx`
 - 模块：后端
   - 技术：`Node.js`
-  - 落点文件：`apps/server/src/index.ts`
+  - 落点文件：`clone-me-server/src/app.js`
 
 ## 接口约定（先锁死，减少联调扯皮）
 
@@ -58,12 +58,12 @@
   - `apps/web/src/avatar/live2dAdapter.ts`：Live2D 初始化、表情、口型驱动
   - `apps/web/src/services/api.ts`（新增）：封装所有后端请求
 - 后端
-  - `apps/server/src/index.ts`：路由与参数校验
-  - `apps/server/src/services/persona.ts`：Prompt 组装、模式风格控制
-  - `apps/server/src/services/rag.ts`：平台 RAG API 封装与引用返回
-  - `apps/server/src/services/memory.ts`（新增）：平台 Memory API 封装
-  - `apps/server/src/services/tts.ts`：平台 TTS 接入与 phoneme 映射
-  - `apps/server/src/services/llm.ts`（新增）：模型调用与超时重试
+  - `clone-me-server/src/app.js`：服务入口、路由注册、WS 代理
+  - `clone-me-server/src/routes/chat.js`：对话路由与流式接口
+  - `clone-me-server/src/routes/embedding.js`：向量化接口
+  - `clone-me-server/src/services/tts.js`：平台 TTS 接入
+  - `clone-me-server/src/services/asr.js`：平台 ASR 接入
+  - `clone-me-server/src/services/llm.js`：模型调用与流式能力
 
 ## 四人分工（前端 + 后端A + 后端B + 运营）
 
@@ -127,13 +127,13 @@
 
 ## P0（今天做，先保证 Demo 稳）
 
-- [ ] 接入真实 LLM（替换 `apps/server/src/services/persona.ts` 的 mock 逻辑）
+- [ ] 接入真实 LLM（完善 `clone-me-server/src/services/llm.js` 的业务编排）
   - 输出要求：固定人设、三种模式可控、回复长度可控
   - 技术选型：比赛平台大模型 API（温度 `0.4~0.6`，max tokens `300~500`）
   - 实现细节：`system prompt` + `mode prompt` + `rag context` + `memory context` 四段拼接
   - 验收：同一问题在 `teacher/friend/support` 三种模式下回答明显不同
 
-- [ ] 接入真实 TTS（替换 `apps/server/src/services/tts.ts`）
+- [ ] 接入真实 TTS（完善 `clone-me-server/src/services/tts.js`）
   - 建议：优先接平台 WebSocket TTS；备选 ElevenLabs
   - 技术选型：先返回 `base64 音频` 或临时 URL，避免前端跨域踩坑
   - 实现细节：把文本按句号切片，超长文本分段合成再拼接
@@ -154,13 +154,13 @@
 ## P1（明天做，提升完整度和评分）
 
 - [ ] 把 RAG 改为平台 API 正式链路
-  - 当前文件：`apps/server/src/services/rag.ts`
+  - 当前文件：`clone-me-server/src/routes/embedding.js`
   - 技术选型：平台 RAG（检索参数由平台托管）
   - 实现细节：固定 `topK=3~5`，无命中时走“无检索兜底回答”
   - 验收：能返回 topK 片段，并记录引用来源
 
 - [ ] 接入平台 Memory API（记忆进化）
-  - 当前文件：`apps/server/src/services/memory.ts`（新增）
+  - 当前文件：`clone-me-server/src/routes/chat.js`
   - 技术选型：平台 Memory（会话摘要 + 用户偏好）
   - 实现细节：每次回答后写入偏好标签（短回答/详细回答等）
   - 验收：连续 3 轮对话后，回答风格出现可见变化

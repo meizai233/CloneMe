@@ -60,6 +60,7 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
         height: number;
         x: number;
         y: number;
+        rotation?: number;
         scale: { set: (value: number) => void };
         anchor?: { set: (x: number, y: number) => void };
         internalModel?: { coreModel?: { setParameterValueById?: (id: string, value: number) => void } };
@@ -69,6 +70,7 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
   let timer: ReturnType<typeof setInterval> | null = null;
   let idleTimer: ReturnType<typeof setInterval> | null = null;
   let onResize: (() => void) | null = null;
+  let baseTransform = { x: 0, y: 0, scale: 1 };
 
   const emit = () => {
     if (!onStateChange) return;
@@ -106,6 +108,18 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
       if (!live2dModel) return;
 
       const t = (Date.now() - startedAt) / 1000;
+      // Always-visible idle transform. This works even when a specific model lacks some Param* ids.
+      const floatY = Math.sin(t * 1.1) * 2.2;
+      const swayX = Math.sin(t * 0.65) * 1.8;
+      const swayRot = Math.sin(t * 0.52) * 0.012;
+      const breathScale = 1 + Math.sin(t * 1.7) * 0.01;
+      live2dModel.x = baseTransform.x + swayX;
+      live2dModel.y = baseTransform.y + floatY;
+      live2dModel.scale.set(baseTransform.scale * breathScale);
+      if ("rotation" in live2dModel) {
+        live2dModel.rotation = swayRot;
+      }
+
       const breathing = (Math.sin(t * 1.7) + 1) * 0.5;
       const headYaw = Math.sin(t * 0.8) * 4;
       const headPitch = Math.sin(t * 1.1) * 2.2;
@@ -192,8 +206,13 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
       pivotX,
       pivotY
     );
-    live2dModel.x = width * viewportFit.centerXRatio;
-    live2dModel.y = height * Math.min(0.98, viewportFit.baselineYRatio + bottomSafeAreaRatio);
+    baseTransform = {
+      x: width * viewportFit.centerXRatio,
+      y: height * Math.min(0.98, viewportFit.baselineYRatio + bottomSafeAreaRatio),
+      scale
+    };
+    live2dModel.x = baseTransform.x;
+    live2dModel.y = baseTransform.y;
   };
 
   const stopLipSync = () => {
