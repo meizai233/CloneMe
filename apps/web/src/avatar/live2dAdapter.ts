@@ -1,5 +1,33 @@
-export type AvatarEmotion = "neutral" | "happy" | "thinking";
+import { live2dEmotionProfiles, live2dGestureProfiles } from "./live2dProfiles";
+
+export type AvatarEmotion =
+  | "neutral"
+  | "happy"
+  | "thinking"
+  | "excited"
+  | "confident"
+  | "warm"
+  | "serious"
+  | "surprised";
 export type AvatarRuntime = "live2d" | "mock";
+export type AvatarGesture =
+  | "none"
+  | "nod"
+  | "emphasis"
+  | "thinking"
+  | "clap"
+  | "openArms"
+  | "promoPitch"
+  | "discountHighlight"
+  | "comfortExplain";
+export interface AvatarPose {
+  headX: number;
+  headY: number;
+  bodyX: number;
+  bodyY: number;
+  eyeX: number;
+  eyeY: number;
+}
 
 interface Live2DState {
   emotion: AvatarEmotion;
@@ -17,6 +45,9 @@ interface CreateLive2DAdapterOptions {
 export interface Live2DDriver {
   init(canvasId?: string): Promise<void>;
   setEmotion(emotion: AvatarEmotion): void;
+  setPose(pose: Partial<AvatarPose>): void;
+  playGesture(gesture: AvatarGesture): void;
+  setMouthOpen(value: number): void;
   setSpeaking(speaking: boolean): void;
   playLipSync(cues: number[]): () => void;
   destroy(): void;
@@ -70,10 +101,45 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
   let timer: ReturnType<typeof setInterval> | null = null;
   let idleTimer: ReturnType<typeof setInterval> | null = null;
   let motionTimer: ReturnType<typeof setInterval> | null = null;
+  let gesturePosePulseTimer: ReturnType<typeof setInterval> | null = null;
+  let gestureParameterPulseTimer: ReturnType<typeof setInterval> | null = null;
+  let gestureTouchedParameterIds = new Set<string>();
   let onResize: (() => void) | null = null;
   let baseTransform = { x: 0, y: 0, scale: 1 };
   let initToken = 0;
   let tickerRegistered = false;
+  const semanticPoseTarget: AvatarPose = {
+    headX: 0,
+    headY: 0,
+    bodyX: 0,
+    bodyY: 0,
+    eyeX: 0,
+    eyeY: 0
+  };
+  const semanticPoseCurrent: AvatarPose = {
+    headX: 0,
+    headY: 0,
+    bodyX: 0,
+    bodyY: 0,
+    eyeX: 0,
+    eyeY: 0
+  };
+  const gesturePoseTarget: AvatarPose = {
+    headX: 0,
+    headY: 0,
+    bodyX: 0,
+    bodyY: 0,
+    eyeX: 0,
+    eyeY: 0
+  };
+  const gesturePoseCurrent: AvatarPose = {
+    headX: 0,
+    headY: 0,
+    bodyX: 0,
+    bodyY: 0,
+    eyeX: 0,
+    eyeY: 0
+  };
 
   const emit = () => {
     if (!onStateChange) return;
@@ -95,6 +161,89 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
     setModelParameter("ParamMouthOpenY", value);
     setModelParameter("PARAM_MOUTH_OPEN_Y", value);
   };
+  const applyParameterSnapshot = (snapshot: Record<string, number> | undefined) => {
+    if (!snapshot) return;
+    for (const [parameterId, value] of Object.entries(snapshot)) {
+      setModelParameter(parameterId, value);
+    }
+  };
+
+  const clampUnit = (value: number) => Math.min(1, Math.max(-1, value));
+  const playModelMotion = (index: number) => {
+    (live2dModel as unknown as { motion?: (group: string, index: number) => Promise<unknown> | unknown }).motion?.(
+      "",
+      index
+    );
+  };
+  const resetGestureTarget = () => {
+    gesturePoseTarget.headX = 0;
+    gesturePoseTarget.headY = 0;
+    gesturePoseTarget.bodyX = 0;
+    gesturePoseTarget.bodyY = 0;
+    gesturePoseTarget.eyeX = 0;
+    gesturePoseTarget.eyeY = 0;
+  };
+  const resetGestureParameters = () => {
+    for (const parameterId of gestureTouchedParameterIds) {
+      setModelParameter(parameterId, 0);
+    }
+    gestureTouchedParameterIds = new Set<string>();
+  };
+  const stopGestureParameterPulse = () => {
+    if (gestureParameterPulseTimer) {
+      clearInterval(gestureParameterPulseTimer);
+      gestureParameterPulseTimer = null;
+    }
+    resetGestureParameters();
+  };
+  const stopGesturePosePulse = () => {
+    if (gesturePosePulseTimer) {
+      clearInterval(gesturePosePulseTimer);
+      gesturePosePulseTimer = null;
+    }
+    resetGestureTarget();
+  };
+  const stopGesturePulse = () => {
+    stopGesturePosePulse();
+    stopGestureParameterPulse();
+  };
+  const startGesturePosePulse = (frames: Array<Partial<AvatarPose>>, frameMs: number) => {
+    stopGesturePosePulse();
+    let index = 0;
+    gesturePosePulseTimer = setInterval(() => {
+      const frame = frames[index];
+      if (frame) {
+        if (typeof frame.headX === "number") gesturePoseTarget.headX = clampUnit(frame.headX);
+        if (typeof frame.headY === "number") gesturePoseTarget.headY = clampUnit(frame.headY);
+        if (typeof frame.bodyX === "number") gesturePoseTarget.bodyX = clampUnit(frame.bodyX);
+        if (typeof frame.bodyY === "number") gesturePoseTarget.bodyY = clampUnit(frame.bodyY);
+        if (typeof frame.eyeX === "number") gesturePoseTarget.eyeX = clampUnit(frame.eyeX);
+        if (typeof frame.eyeY === "number") gesturePoseTarget.eyeY = clampUnit(frame.eyeY);
+      }
+      index += 1;
+      if (index >= frames.length) {
+        stopGesturePosePulse();
+      }
+    }, Math.max(70, frameMs));
+  };
+  const startGestureParameterPulse = (frames: Array<Record<string, number>>, frameMs: number) => {
+    stopGestureParameterPulse();
+    if (frames.length === 0) return;
+    let index = 0;
+    gestureParameterPulseTimer = setInterval(() => {
+      const frame = frames[index];
+      if (frame) {
+        for (const [parameterId, value] of Object.entries(frame)) {
+          gestureTouchedParameterIds.add(parameterId);
+          setModelParameter(parameterId, value);
+        }
+      }
+      index += 1;
+      if (index >= frames.length) {
+        stopGestureParameterPulse();
+      }
+    }, Math.max(70, frameMs));
+  };
 
   const stopIdleMotion = () => {
     if (idleTimer) {
@@ -111,16 +260,12 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
     stopIdleMotion();
 
     const startedAt = Date.now();
-    const playMotion = (index: number) => {
-      (live2dModel as unknown as { motion?: (group: string, index: number) => Promise<unknown> | unknown })
-        .motion?.("", index);
-    };
     // Prefer model-authored motions for natural movement. Some models have static index 0,
     // so alternate short motion clips to keep visible idle dynamics.
-    playMotion(1);
+    playModelMotion(1);
     motionTimer = setInterval(() => {
       const motionIndex = 1 + Math.floor(Math.random() * 26);
-      playMotion(motionIndex);
+      playModelMotion(motionIndex);
     }, 5000);
 
     idleTimer = setInterval(() => {
@@ -128,12 +273,33 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
 
       const t = (Date.now() - startedAt) / 1000;
       const breathing = (Math.sin(t * 1.5) + 1) * 0.5;
-      const headYaw = Math.sin(t * 0.9) * 8;
-      const headPitch = Math.sin(t * 1.15) * 4;
-      const bodyYaw = Math.sin(t * 0.62) * 5;
-      const bodyLean = Math.sin(t * 0.45) * 2;
-      const eyeBallX = Math.sin(t * 0.7) * 0.35;
-      const eyeBallY = Math.sin(t * 1.1) * 0.18;
+      const idleScale = state.speaking ? 0.55 : 1;
+      const smoothing = 0.12;
+      semanticPoseCurrent.headX += (semanticPoseTarget.headX - semanticPoseCurrent.headX) * smoothing;
+      semanticPoseCurrent.headY += (semanticPoseTarget.headY - semanticPoseCurrent.headY) * smoothing;
+      semanticPoseCurrent.bodyX += (semanticPoseTarget.bodyX - semanticPoseCurrent.bodyX) * smoothing;
+      semanticPoseCurrent.bodyY += (semanticPoseTarget.bodyY - semanticPoseCurrent.bodyY) * smoothing;
+      semanticPoseCurrent.eyeX += (semanticPoseTarget.eyeX - semanticPoseCurrent.eyeX) * smoothing;
+      semanticPoseCurrent.eyeY += (semanticPoseTarget.eyeY - semanticPoseCurrent.eyeY) * smoothing;
+      gesturePoseCurrent.headX += (gesturePoseTarget.headX - gesturePoseCurrent.headX) * 0.26;
+      gesturePoseCurrent.headY += (gesturePoseTarget.headY - gesturePoseCurrent.headY) * 0.26;
+      gesturePoseCurrent.bodyX += (gesturePoseTarget.bodyX - gesturePoseCurrent.bodyX) * 0.26;
+      gesturePoseCurrent.bodyY += (gesturePoseTarget.bodyY - gesturePoseCurrent.bodyY) * 0.26;
+      gesturePoseCurrent.eyeX += (gesturePoseTarget.eyeX - gesturePoseCurrent.eyeX) * 0.26;
+      gesturePoseCurrent.eyeY += (gesturePoseTarget.eyeY - gesturePoseCurrent.eyeY) * 0.26;
+
+      const headYaw =
+        Math.sin(t * 0.9) * 8 * idleScale + (semanticPoseCurrent.headY + gesturePoseCurrent.headY) * 12;
+      const headPitch =
+        Math.sin(t * 1.15) * 4 * idleScale + (semanticPoseCurrent.headX + gesturePoseCurrent.headX) * 8;
+      const bodyYaw =
+        Math.sin(t * 0.62) * 5 * idleScale + (semanticPoseCurrent.bodyY + gesturePoseCurrent.bodyY) * 8;
+      const bodyLean =
+        Math.sin(t * 0.45) * 2 * idleScale + (semanticPoseCurrent.bodyX + gesturePoseCurrent.bodyX) * 6;
+      const eyeBallX =
+        Math.sin(t * 0.7) * 0.35 * idleScale + (semanticPoseCurrent.eyeX + gesturePoseCurrent.eyeX) * 0.5;
+      const eyeBallY =
+        Math.sin(t * 1.1) * 0.18 * idleScale + (semanticPoseCurrent.eyeY + gesturePoseCurrent.eyeY) * 0.4;
 
       setModelParameter("ParamBreath", breathing);
       setModelParameter("PARAM_BREATH", breathing);
@@ -169,25 +335,12 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
   const applyEmotionToModel = (emotion: AvatarEmotion) => {
     if (!live2dModel) return;
 
-    if (emotion === "happy") {
-      live2dModel.expression?.("F01");
-      setModelParameter("ParamEyeSmile", 0.6);
-      setModelParameter("ParamMouthForm", 0.7);
-      return;
-    }
-
-    if (emotion === "thinking") {
-      live2dModel.expression?.("F02");
-      setModelParameter("ParamBrowLY", -0.35);
-      setModelParameter("ParamBrowRY", -0.35);
-      return;
-    }
-
-    live2dModel.expression?.("F00");
-    setModelParameter("ParamEyeSmile", 0);
-    setModelParameter("ParamMouthForm", 0);
-    setModelParameter("ParamBrowLY", 0);
-    setModelParameter("ParamBrowRY", 0);
+    const baseline = live2dEmotionProfiles.neutral;
+    const profile = live2dEmotionProfiles[emotion] ?? baseline;
+    live2dModel.expression?.(baseline.expression ?? "F00");
+    applyParameterSnapshot(baseline.params);
+    live2dModel.expression?.(profile.expression ?? baseline.expression ?? "F00");
+    applyParameterSnapshot(profile.params);
   };
 
   const resizeModelToViewport = () => {
@@ -243,6 +396,7 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
 
   const cleanupRuntime = () => {
     stopIdleMotion();
+    stopGesturePulse();
     stopLipSync();
     if (onResize && typeof window !== "undefined") {
       window.removeEventListener("resize", onResize);
@@ -360,6 +514,38 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
     setEmotion(emotion) {
       state.emotion = emotion;
       applyEmotionToModel(emotion);
+      emit();
+    },
+    setPose(pose) {
+      if (typeof pose.headX === "number") semanticPoseTarget.headX = clampUnit(pose.headX);
+      if (typeof pose.headY === "number") semanticPoseTarget.headY = clampUnit(pose.headY);
+      if (typeof pose.bodyX === "number") semanticPoseTarget.bodyX = clampUnit(pose.bodyX);
+      if (typeof pose.bodyY === "number") semanticPoseTarget.bodyY = clampUnit(pose.bodyY);
+      if (typeof pose.eyeX === "number") semanticPoseTarget.eyeX = clampUnit(pose.eyeX);
+      if (typeof pose.eyeY === "number") semanticPoseTarget.eyeY = clampUnit(pose.eyeY);
+    },
+    playGesture(gesture) {
+      if (!live2dModel || gesture === "none") return;
+      const profile = live2dGestureProfiles[gesture];
+      if (!profile) return;
+      if (typeof profile.motionIndex === "number") {
+        playModelMotion(profile.motionIndex);
+      }
+      const frameMs = Math.max(70, profile.frameMs ?? 120);
+      if (profile.poseFrames && profile.poseFrames.length > 0) {
+        startGesturePosePulse(profile.poseFrames, frameMs);
+      } else {
+        stopGesturePosePulse();
+      }
+      if (profile.parameterFrames && profile.parameterFrames.length > 0) {
+        startGestureParameterPulse(profile.parameterFrames, frameMs);
+      } else {
+        stopGestureParameterPulse();
+      }
+    },
+    setMouthOpen(value) {
+      state.mouthOpen = Math.min(1, Math.max(0, value));
+      applyMouthOpenToModel(state.mouthOpen);
       emit();
     },
     setSpeaking(speaking) {
