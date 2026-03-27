@@ -53,7 +53,7 @@ export interface VoiceCloneDeleteResponse {
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3001";
-const REQUEST_TIMEOUT_MS = 12000;
+const REQUEST_TIMEOUT_MS = 120000;
 
 class ApiError extends Error {
   constructor(message: string, public readonly status?: number) {
@@ -140,19 +140,75 @@ export async function chatWithAvatar(payload: {
   userQuestion: string;
   mode: PersonaMode;
   voiceId?: string;
+  onDelta?: (fullText: string) => void;
+  onDeltaIncrement?: (increment: string) => void;
 }): Promise<ChatResponse> {
-  const data = await requestJson<
-    ChatResponse,
-    { userQuestion: string; mode: PersonaMode; voiceId?: string }
-  >(
-    "/api/chat",
-    payload
-  );
+  const { onDelta, onDeltaIncrement, ...body } = payload;
 
-  return {
-    ...data,
-    audioUrl: joinUrl(API_BASE_URL, data.audioUrl)
-  };
+  const response = await fetch(joinUrl(API_BASE_URL, "/api/chat"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({})) as { message?: string };
+    throw new ApiError(err.message ?? "请求失败", response.status);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) throw new ApiError("无法读取流式响应");
+
+  const decoder = new TextDecoder();
+  let fullReply = "";
+  let result: ChatResponse | null = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    const text = decoder.decode(value, { stream: true });
+    const lines = text.split("\n").filter((l) => l.startsWith("data: "));
+
+    for (const line of lines) {
+      const jsonStr = line.slice(6).trim();
+      if (!jsonStr) continue;
+      try {
+        const parsed = JSON.parse(jsonStr);
+        if (parsed.type === "delta" && parsed.content) {
+          fullReply += parsed.content;
+          onDelta?.(fullReply);
+          onDeltaIncrement?.(parsed.content);
+        } else if (parsed.type === "done") {
+          result = {
+            reply: parsed.reply,
+            references: parsed.references ?? [],
+            emotion: parsed.emotion ?? "neutral",
+            audioUrl: joinUrl(API_BASE_URL, parsed.audioUrl ?? ""),
+            phonemeCues: parsed.phonemeCues ?? [],
+          };
+        } else if (parsed.type === "error") {
+          throw new ApiError(parsed.message ?? "流式响应错误");
+        }
+      } catch (e) {
+        if (e instanceof ApiError) throw e;
+        // JSON 解析失败跳过
+      }
+    }
+  }
+
+  if (!result) {
+    // fallback：如果没收到 done 事件，用累积的内容构造结果
+    result = {
+      reply: fullReply || "抱歉，回复异常",
+      references: [],
+      emotion: "neutral" as AvatarEmotion,
+      audioUrl: "",
+      phonemeCues: [],
+    };
+  }
+
+  return result;
 }
 
 export async function createVoiceClone(payload: {

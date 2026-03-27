@@ -11,7 +11,10 @@ import { LLM_BASE_URL, API_KEYS, MODELS } from '../config.js';
  * @returns {Promise<object>} - LLM 响应
  */
 export async function chat(messages, options = {}) {
-  const { model = MODELS.chat, temperature = 0.8 } = options;
+  const { model = MODELS.chat, temperature = 0.8, max_tokens } = options;
+
+  const body = { model, messages, temperature, stream: false };
+  if (max_tokens) body.max_tokens = max_tokens;
 
   const res = await fetch(`${LLM_BASE_URL}/chat/completions`, {
     method: 'POST',
@@ -19,7 +22,7 @@ export async function chat(messages, options = {}) {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${API_KEYS.llm}`,
     },
-    body: JSON.stringify({ model, messages, temperature, stream: false }),
+    body: JSON.stringify(body),
   });
 
   if (!res.ok) {

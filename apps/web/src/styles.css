@@ -473,3 +473,57 @@ ul {
 .recording-prompt-tooltip:hover .recording-prompt-popup {
   display: block;
 }
+
+/* 对话框 */
+.chat-dialog {
+  background: #1e1e1e;
+  border: 1px solid #333;
+  border-radius: 10px;
+  margin-top: 12px;
+  overflow: hidden;
+}
+.chat-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  background: #252525;
+  font-size: 0.85rem;
+  color: #aaa;
+}
+.chat-typing {
+  font-size: 0.75rem;
+  color: #4fc3f7;
+  animation: pulse 1s infinite;
+}
+.chat-dialog-body {
+  padding: 12px 14px;
+  max-height: 200px;
+  overflow-y: auto;
+  font-size: 0.9rem;
+  line-height: 1.7;
+  color: #ddd;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.chat-dialog-body p {
+  margin: 0;
+}
+.chat-dialog-refs {
+  padding: 8px 14px;
+  border-top: 1px solid #333;
+  font-size: 0.8rem;
+  color: #888;
+}
+.chat-dialog-refs h4 {
+  margin: 0 0 4px;
+  font-size: 0.8rem;
+  color: #aaa;
+}
+.chat-dialog-refs ul {
+  margin: 0;
+  padding-left: 16px;
+}
+.chat-dialog-refs li {
+  margin-bottom: 2px;
+}

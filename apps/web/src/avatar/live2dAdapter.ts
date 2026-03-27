@@ -299,7 +299,9 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
           antialias: true,
           resizeTo: canvas.parentElement ?? undefined,
           resolution: devicePixelRatio,
-          autoDensity: true
+          autoDensity: true,
+          eventMode: 'none' as const,
+          eventFeatures: { move: false, globalMove: false, click: false, wheel: false },
         };
 
         let nextApp: any = null;
@@ -318,6 +320,11 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
         }
 
         const nextModel = await Live2DModel.from(modelUrl, { autoInteract: false });
+        // 禁用模型的交互事件，避免 pixi v7 EventBoundary.isInteractive 兼容问题
+        (nextModel as unknown as { interactive?: boolean; interactiveChildren?: boolean }).interactive = false;
+        (nextModel as unknown as { interactive?: boolean; interactiveChildren?: boolean }).interactiveChildren = false;
+        // pixi v7.3+ 使用 eventMode 替代 interactive
+        (nextModel as unknown as { eventMode?: string }).eventMode = 'none';
         if (token !== initToken) {
           nextApp?.destroy(true);
           return;
