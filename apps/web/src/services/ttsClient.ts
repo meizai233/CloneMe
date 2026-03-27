@@ -214,6 +214,15 @@ export class TTSClient {
   }
 
   /**
+   * 通知后端当前 task 的所有文本已发完
+   */
+  finishCurrentTask() {
+    if (this.connected && this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ action: 'finish' }));
+    }
+  }
+
+  /**
    * 更新 voiceId
    */
   setVoiceId(voiceId: string | undefined) {
@@ -223,50 +232,118 @@ export class TTSClient {
 
 /**
  * 句子缓冲器：将流式 token 按标点断句
+ * 优化策略：
+ * 1. 优先在句号/问号/感叹号处断句
+ * 2. 超过 maxLength 时在逗号/分号/换行处强制断句
+ * 3. 超过 hardMaxLength 时在任意位置强制断句
  */
 export class SentenceBuffer {
   private buffer = "";
   private minLength: number;
+  private maxLength: number;
+  private hardMaxLength: number;
   private onSentence: (sentence: string) => void;
 
-  constructor(onSentence: (sentence: string) => void, minLength = 8) {
+  constructor(onSentence: (sentence: string) => void, minLength = 6, maxLength = 40, hardMaxLength = 60) {
     this.onSentence = onSentence;
     this.minLength = minLength;
+    this.maxLength = maxLength;
+    this.hardMaxLength = hardMaxLength;
   }
 
   /**
-   * 追加文本，遇到断句标点时触发回调
+   * 追加文本，按断句规则触发回调
    */
   push(text: string) {
     this.buffer += text;
 
-    // 按句子标点断句
-    const sentenceEnders = /([。！？\n.!?])/;
-    while (true) {
-      const match = this.buffer.match(sentenceEnders);
-      if (!match || match.index === undefined) break;
+    while (this.buffer.length > 0) {
+      let cutIdx = -1;
 
-      const endIdx = match.index + match[0].length;
-      const sentence = this.buffer.slice(0, endIdx).trim();
-      this.buffer = this.buffer.slice(endIdx);
+      // 规则 1：在句号/问号/感叹号/换行处断句
+      const strongMatch = this.buffer.match(/[。！？\n.!?]/);
+      if (strongMatch && strongMatch.index !== undefined) {
+        cutIdx = strongMatch.index + 1;
+      }
+
+      // 规则 2：如果没有强断句符，但超过 maxLength，在逗号/分号/顿号/冒号处断句
+      if (cutIdx === -1 && this.buffer.length >= this.maxLength) {
+        // 从 minLength 位置开始搜索，避免在太前面断句
+        const searchFrom = this.buffer.slice(this.minLength);
+        const weakMatch = searchFrom.match(/[，,；;、：:）)]/);
+        if (weakMatch && weakMatch.index !== undefined) {
+          cutIdx = this.minLength + weakMatch.index + 1;
+        }
+      }
+
+      // 规则 3：如果还是没有断句点，但超过 hardMaxLength，在最近的空格或直接截断
+      if (cutIdx === -1 && this.buffer.length >= this.hardMaxLength) {
+        // 尝试在 maxLength 附近找一个弱断句符
+        const nearCut = this.buffer.slice(0, this.hardMaxLength);
+        const lastWeak = Math.max(
+          nearCut.lastIndexOf('，'),
+          nearCut.lastIndexOf(','),
+          nearCut.lastIndexOf('。'),
+          nearCut.lastIndexOf('；'),
+          nearCut.lastIndexOf('、'),
+          nearCut.lastIndexOf('：'),
+          nearCut.lastIndexOf(' '),
+        );
+        cutIdx = lastWeak > this.minLength ? lastWeak + 1 : this.maxLength;
+      }
+
+      if (cutIdx === -1) break; // 没有断句点且长度未超限，等更多文本
+
+      const sentence = this.buffer.slice(0, cutIdx).trim();
+      this.buffer = this.buffer.slice(cutIdx);
 
       // 短句合并到下一句
-      if (sentence.length >= this.minLength) {
-        this.onSentence(sentence);
-      } else {
+      if (sentence.length < this.minLength) {
         this.buffer = sentence + this.buffer;
         break;
       }
+
+      this.onSentence(sentence);
     }
   }
 
   /**
    * 刷新剩余内容（流结束时调用）
+   * 对剩余文本也执行断句，而不是整段发出
    */
   flush() {
+    // 先尝试对剩余内容断句
+    if (this.buffer.length > this.maxLength) {
+      // 强制触发断句：临时降低阈值
+      const saved = this.hardMaxLength;
+      this.hardMaxLength = this.maxLength;
+      this.push(""); // 触发 while 循环重新检查
+      this.hardMaxLength = saved;
+    }
+
+    // 发送最终剩余的内容
     const remaining = this.buffer.trim();
     if (remaining.length > 0) {
-      this.onSentence(remaining);
+      // 如果剩余内容还是很长，按 maxLength 强制拆分
+      if (remaining.length > this.maxLength) {
+        let pos = 0;
+        while (pos < remaining.length) {
+          const chunk = remaining.slice(pos, pos + this.maxLength);
+          // 尝试在断句符处切
+          const lastBreak = Math.max(
+            chunk.lastIndexOf('，'), chunk.lastIndexOf(','),
+            chunk.lastIndexOf('。'), chunk.lastIndexOf('！'),
+            chunk.lastIndexOf('？'), chunk.lastIndexOf('；'),
+            chunk.lastIndexOf('\n'), chunk.lastIndexOf('：'),
+          );
+          const cutAt = lastBreak > this.minLength ? lastBreak + 1 : chunk.length;
+          const piece = remaining.slice(pos, pos + cutAt).trim();
+          if (piece) this.onSentence(piece);
+          pos += cutAt;
+        }
+      } else {
+        this.onSentence(remaining);
+      }
     }
     this.buffer = "";
   }
