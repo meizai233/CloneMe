@@ -2,11 +2,12 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 import {
   createLive2DAdapter,
   type AvatarEmotion,
+  type AvatarGesture,
   type AvatarRuntime,
   type Live2DDriver
 } from "./avatar/live2dAdapter";
+import { avatarIntroScripts } from "./avatar/modeIntro.js";
 import {
-  chatWithAvatar,
   createVoiceClone,
   initAvatarProfile,
   uploadAudio,
@@ -77,6 +78,8 @@ export default function App() {
   const sentenceBufferRef = useRef<SentenceBuffer | null>(null);
   const typingQueueRef = useRef("");
   const typingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastGestureRef = useRef<AvatarGesture>("none");
+  const lastGestureAtRef = useRef(0);
 
   const [personas, setPersonas] = useState<PersonaInfo[]>([]);
   const [selectedPersona, setSelectedPersona] = useState<string>("general");
@@ -107,6 +110,9 @@ export default function App() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const introStopLipSyncRef = useRef<(() => void) | null>(null);
+  const introTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const introRunIdRef = useRef(0);
   const [voiceLatency, setVoiceLatency] = useState<{
     firstByteMs: number;
     totalMs: number;
@@ -162,6 +168,70 @@ export default function App() {
     typingQueueRef.current = "";
   }, []);
 
+  const clearIntroTimers = useCallback(() => {
+    introTimeoutsRef.current.forEach((timer) => clearTimeout(timer));
+    introTimeoutsRef.current = [];
+  }, []);
+
+  const waitWithIntroTimer = useCallback(
+    (ms: number) =>
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(() => {
+          introTimeoutsRef.current = introTimeoutsRef.current.filter((item) => item !== timer);
+          resolve();
+        }, ms);
+        introTimeoutsRef.current.push(timer);
+      }),
+    []
+  );
+
+  const stopModeIntroSpeech = useCallback(() => {
+    introStopLipSyncRef.current?.();
+    introStopLipSyncRef.current = null;
+    adapterRef.current?.setSpeaking(false);
+  }, []);
+
+  const stopModeIntro = useCallback(() => {
+    introRunIdRef.current += 1;
+    clearIntroTimers();
+    stopModeIntroSpeech();
+  }, [clearIntroTimers, stopModeIntroSpeech]);
+
+  const runModeIntro = useCallback(
+    async (targetMode: PersonaMode) => {
+      if (!avatarReady) return;
+      const script = avatarIntroScripts[targetMode];
+      if (!script) return;
+
+      stopModeIntro();
+      const runId = ++introRunIdRef.current;
+      setErrorMessage(null);
+      setReferences([]);
+      setAnswer(`虚拟形象名称：${script.avatarName}`);
+      await waitWithIntroTimer(500);
+      if (runId !== introRunIdRef.current) return;
+
+      for (const item of script.segments) {
+        if (runId !== introRunIdRef.current) return;
+        adapterRef.current?.setEmotion(item.emotion);
+        adapterRef.current?.playGesture(item.gesture);
+        setAnswer((prev) => `${prev}\n${item.text}`);
+        stopModeIntroSpeech();
+        introStopLipSyncRef.current = adapterRef.current?.playLipSync(item.cues) ?? null;
+        adapterRef.current?.setSpeaking(true);
+        await waitWithIntroTimer(item.durationMs);
+        if (runId !== introRunIdRef.current) return;
+        stopModeIntroSpeech();
+        await waitWithIntroTimer(320);
+      }
+
+      if (runId === introRunIdRef.current) {
+        adapterRef.current?.setEmotion("happy");
+      }
+    },
+    [avatarReady, stopModeIntro, stopModeIntroSpeech, waitWithIntroTimer]
+  );
+
   const pushTypewriterText = useCallback((chunkText: string) => {
     if (!chunkText) return;
     typingQueueRef.current += chunkText;
@@ -195,6 +265,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const maybeMode = selectedPersona as PersonaMode;
+    if (selectedPersona in avatarIntroScripts) {
+      void runModeIntro(maybeMode);
+    }
+  }, [avatarReady, runModeIntro, selectedPersona]);
+
+  useEffect(() => {
     if (!(chatLoading && chatPhase === "thinking")) {
       setThinkingDots("");
       return;
@@ -225,12 +302,13 @@ export default function App() {
 
     return () => {
       clearTimeout(initTimer);
+      stopModeIntro();
       cleanupPlayback();
       stopTypewriter();
       adapter.destroy();
       adapterRef.current = null;
     };
-  }, [cleanupPlayback, stopTypewriter]);
+  }, [cleanupPlayback, stopModeIntro, stopTypewriter]);
 
   // 初始化 TTS 客户端
   useEffect(() => {
@@ -242,11 +320,7 @@ export default function App() {
       },
       onMouthOpen: (value) => {
         setMouthOpen(value);
-        // 同步到 Live2D 模型
-        const model = adapterRef.current;
-        if (model) {
-          (model as unknown as { setMouthOpen?: (v: number) => void }).setMouthOpen?.(value);
-        }
+        adapterRef.current?.setMouthOpen(value);
       },
     });
     ttsClientRef.current = ttsClient;
@@ -431,6 +505,7 @@ export default function App() {
   }
 
   const runAsk = useCallback(async () => {
+    stopModeIntro();
     setChatLoading(true);
     setChatPhase("thinking");
     setAnswer("");
@@ -447,6 +522,9 @@ export default function App() {
     }
 
     try {
+      lastGestureRef.current = "none";
+      lastGestureAtRef.current = 0;
+
       // 停止之前的 TTS 播放
       ttsClientRef.current?.stop();
 
@@ -509,7 +587,7 @@ export default function App() {
       setChatPhase("idle");
       setChatLoading(false);
     }
-  }, [cleanupPlayback, selectedPersona, sessionId, userId, playAnswerAudio, playFallbackLipSync, pushTypewriterText, question, stopTypewriter, voiceId]);
+  }, [cleanupPlayback, selectedPersona, sessionId, userId, playAnswerAudio, playFallbackLipSync, question, stopModeIntro, stopTypewriter]);
 
   async function onAsk(event: FormEvent) {
     event.preventDefault();
