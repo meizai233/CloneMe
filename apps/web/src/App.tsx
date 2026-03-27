@@ -730,6 +730,9 @@ export default function App() {
       return;
     }
 
+    // 提问后清空输入框
+    setQuestion("");
+
     try {
       lastGestureRef.current = "none";
       lastGestureAtRef.current = 0;
@@ -1012,11 +1015,27 @@ export default function App() {
         <div className="chat-dialog">
           <div className="chat-dialog-header">
             <span>💬 分身回复</span>
-            {chatLoading && (
-              <span className="chat-typing">
-                {chatPhase === "thinking" ? `思考中${thinkingDots}` : "输出中..."}
-              </span>
-            )}
+            <div className="chat-dialog-header-right">
+              {chatLoading && (
+                <span className="chat-typing">
+                  {chatPhase === "thinking" ? `思考中${thinkingDots}` : "输出中..."}
+                </span>
+              )}
+              {isSpeaking && (
+                <button
+                  type="button"
+                  className="stop-audio-btn"
+                  onClick={() => {
+                    ttsClientRef.current?.stop();
+                    adapterRef.current?.setSpeaking(false);
+                    setIsSpeaking(false);
+                  }}
+                  title="停止语音播放"
+                >
+                  ⏹
+                </button>
+              )}
+            </div>
           </div>
           <div className="chat-dialog-body">
             <p>{chatLoading && chatPhase === "thinking" && !answer ? `🤔 正在思考${thinkingDots}` : answer}</p>

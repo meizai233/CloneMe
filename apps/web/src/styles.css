@@ -735,3 +735,25 @@ ul {
 .chat-dialog-refs li {
   margin-bottom: 2px;
 }
+
+/* 对话框 header 右侧 */
+.chat-dialog-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.stop-audio-btn {
+  background: none;
+  border: 1px solid #555;
+  border-radius: 4px;
+  color: #ddd;
+  font-size: 0.8rem;
+  padding: 2px 8px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.stop-audio-btn:hover {
+  background: #e53935;
+  border-color: #e53935;
+  color: #fff;
+}

@@ -121,9 +121,11 @@ ttsWss.on('connection', (clientWs) => {
             }
             pendingTexts = [];
           } else if (event === 'task-finished') {
-            // task 结束，但不关闭连接，下次发文本时会重建 task
+            // task 结束，关闭连接，下次对话时创建全新连接
             taskStarted = false;
-            console.log('[TTS] Task finished');
+            console.log('[TTS] Task finished, closing upstream');
+            try { upstream.close(); } catch { /* 忽略 */ }
+            upstream = null;
           }
         } catch {
           // JSON 解析失败 = 音频数据

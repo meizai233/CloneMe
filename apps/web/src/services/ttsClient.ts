@@ -25,7 +25,10 @@ interface TTSClientOptions {
 
 export class TTSClient {
   private ws: WebSocket | null = null;
-  private audioQueue: ArrayBuffer[] = [];
+  private audioQueue: ArrayBuffer[] = []; // 待播放的合并后音频段
+  private chunkBuffer: ArrayBuffer[] = []; // 攒 chunk 的缓冲区
+  private chunkBufferSize = 0; // 缓冲区总字节数
+  private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private isPlaying = false;
   private audioContext: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
@@ -38,6 +41,10 @@ export class TTSClient {
   private onMouthOpen?: OnMouthOpen;
   private connected = false;
   private pendingSentences: string[] = [];
+
+  // 攒够 MIN_BUFFER_SIZE 字节或等 FLUSH_INTERVAL_MS 后合并播放
+  private static MIN_BUFFER_SIZE = 8000; // ~0.3 秒 mp3
+  private static FLUSH_INTERVAL_MS = 250;
 
   constructor(options: TTSClientOptions = {}) {
     this.voiceId = options.voiceId;
@@ -54,6 +61,13 @@ export class TTSClient {
         resolve();
         return;
       }
+
+      // 如果有旧连接，先关闭
+      if (this.ws) {
+        try { this.ws.close(); } catch { /* 忽略 */ }
+        this.ws = null;
+      }
+      this.connected = false;
 
       this.ws = new WebSocket(WS_URL);
       this.ws.binaryType = "arraybuffer";
@@ -85,9 +99,17 @@ export class TTSClient {
               // 解析失败当音频处理
             }
           }
-          // 音频数据
-          this.audioQueue.push(data);
-          this.playNext();
+          // 音频数据 → 攒到缓冲区
+          this.chunkBuffer.push(data);
+          this.chunkBufferSize += data.byteLength;
+
+          // 攒够了就合并播放
+          if (this.chunkBufferSize >= TTSClient.MIN_BUFFER_SIZE) {
+            this.flushChunkBuffer();
+          } else {
+            // 没攒够就设定时器，避免最后一小段丢失
+            this.scheduleFlushChunkBuffer();
+          }
         } else if (typeof data === "string") {
           // string 类型的 JSON 消息
           try {
@@ -121,15 +143,58 @@ export class TTSClient {
   sendText(text: string) {
     if (!text.trim()) return;
 
-    if (!this.connected || this.ws?.readyState !== WebSocket.OPEN) {
+    // 检查实际连接状态（不只依赖 this.connected 标志）
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      this.connected = false;
       this.pendingSentences.push(text);
+      // 自动重连
+      this.connect().catch(() => {
+        console.warn("[TTS] 自动重连失败");
+      });
       return;
     }
 
-    this.ws!.send(JSON.stringify({
+    this.ws.send(JSON.stringify({
       text: text.trim(),
       voice: this.voiceId || "cherry",
     }));
+  }
+
+  /**
+   * 合并缓冲区中的 chunk 为一个大段，放入播放队列
+   */
+  private flushChunkBuffer() {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    if (this.chunkBuffer.length === 0) return;
+
+    // 合并所有 chunk 为一个 ArrayBuffer
+    const totalSize = this.chunkBuffer.reduce((sum, buf) => sum + buf.byteLength, 0);
+    const merged = new Uint8Array(totalSize);
+    let offset = 0;
+    for (const buf of this.chunkBuffer) {
+      merged.set(new Uint8Array(buf), offset);
+      offset += buf.byteLength;
+    }
+
+    this.chunkBuffer = [];
+    this.chunkBufferSize = 0;
+
+    this.audioQueue.push(merged.buffer);
+    this.playNext();
+  }
+
+  /**
+   * 延迟合并（避免最后一小段丢失）
+   */
+  private scheduleFlushChunkBuffer() {
+    if (this.flushTimer) return; // 已有定时器
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = null;
+      this.flushChunkBuffer();
+    }, TTSClient.FLUSH_INTERVAL_MS);
   }
 
   /**
@@ -252,6 +317,9 @@ export class TTSClient {
    */
   stop() {
     this.audioQueue = [];
+    this.chunkBuffer = [];
+    this.chunkBufferSize = 0;
+    if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; }
     this.pendingSentences = [];
     if (this.currentSource) {
       try { this.currentSource.stop(); } catch { /* 忽略 */ }
