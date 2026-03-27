@@ -52,7 +52,7 @@ export default function PreviewPage() {
     }).catch(() => navigate("/dashboard"));
   }, [avatarId]);
 
-  // 初始化 Live2D
+  // 初始化 Live2D — 每次切换数字人都重建
   useEffect(() => {
     const adapter = createLive2DAdapter({
       onStateChange(state) {
@@ -69,11 +69,16 @@ export default function PreviewPage() {
       adapter.init(canvasRef.current ?? "preview-canvas", HARU_MODEL_URL);
     }, 100);
 
-    return () => { clearTimeout(timer); adapter.destroy(); };
-  }, []);
+    return () => { clearTimeout(timer); adapter.destroy(); adapterRef.current = null; };
+  }, [avatarId]);
 
-  // 初始化 TTS
+  // 初始化 TTS — 每次切换数字人都重建连接
   useEffect(() => {
+    // 先断开旧连接
+    if (ttsClientRef.current) {
+      ttsClientRef.current.disconnect();
+      ttsClientRef.current = null;
+    }
     const tts = new TTSClient({
       voiceId: avatar?.voice_id || undefined,
       onSpeakingChange: (s) => { adapterRef.current?.setSpeaking(s); setIsSpeaking(s); },
@@ -82,7 +87,7 @@ export default function PreviewPage() {
     ttsClientRef.current = tts;
     tts.connect().catch(() => {});
     return () => { tts.disconnect(); ttsClientRef.current = null; };
-  }, [avatar?.voice_id]);
+  }, [avatarId, avatar?.voice_id]);
 
   // 思考动画
   useEffect(() => {

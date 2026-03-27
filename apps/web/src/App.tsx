@@ -39,12 +39,6 @@ const INTERNAL_KNOWLEDGE_DOCS = [
 const HARU_MODEL_URL = "/models/haru_greeter_pro_jp/runtime/haru_greeter_t05.model3.json";
 const NATORI_MODEL_URL = "/models/natori_pro_zh/runtime/natori_pro_t06.model3.json";
 const PERSONA_STORAGE_KEY = "cloneme.selectedPersona";
-const SUPPORT_DEFAULT_VOICE_SAMPLE_AUDIO_URL =
-  "https://oho-image-cdn.51downapp.cn/ohoKiroUpload/beaee4f1bcf44d2aa0381a885c5adc02_voice_1774599906915.webm";
-const SUPPORT_DEFAULT_VOICE_ID = "cosyvoice-v2-wanyan-81856f33a9854efe9146c08b67612297";
-const GENERAL_DEFAULT_VOICE_SAMPLE_AUDIO_URL =
-  "https://oho-image-cdn.51downapp.cn/ohoKiroUpload/aa6dba6a16334fccb905776fc3fdfdfe_voice_1774593069461.webm";
-const GENERAL_DEFAULT_VOICE_ID = "cosyvoice-v2-cloneme-de1186494da24f33992ab554e7ce480e";
 const ALL_AVATAR_EMOTIONS: AvatarEmotion[] = [
   "neutral",
   "happy",
@@ -398,11 +392,7 @@ export default function App() {
       setAnswer(`虚拟形象名称：${script.avatarName}`);
       const ttsClient = ttsClientRef.current;
       if (ttsClient) {
-        const introVoiceId =
-          targetMode === "support" && !hasCustomVoiceClone
-            ? SUPPORT_DEFAULT_VOICE_ID
-            : (voiceId ?? undefined);
-        ttsClient.setVoiceId(introVoiceId);
+        ttsClient.setVoiceId(voiceId ?? undefined);
         try {
           await ttsClient.connect();
         } catch {
@@ -439,7 +429,6 @@ export default function App() {
     },
     [
       avatarReady,
-      hasCustomVoiceClone,
       markGesture,
       stopModeIntro,
       stopModeIntroSpeech,
@@ -521,57 +510,6 @@ export default function App() {
     },
     [personas]
   );
-
-  const resolveDefaultVoiceProfile = useCallback(
-    (personaKey: string): { voiceId: string; sampleAudioUrl: string; label: string } | null => {
-      const matchedPersona = personas.find((item) => item.key === personaKey);
-      const personaText = `${personaKey} ${matchedPersona?.name ?? ""}`.toLowerCase();
-
-      if (personaKey === "general" || personaText.includes("通用") || personaText.includes("general")) {
-        return {
-          voiceId: GENERAL_DEFAULT_VOICE_ID,
-          sampleAudioUrl: GENERAL_DEFAULT_VOICE_SAMPLE_AUDIO_URL,
-          label: "通用助手默认"
-        };
-      }
-
-      if (resolveIntroMode(personaKey) === "support") {
-        return {
-          voiceId: SUPPORT_DEFAULT_VOICE_ID,
-          sampleAudioUrl: SUPPORT_DEFAULT_VOICE_SAMPLE_AUDIO_URL,
-          label: "售前客服默认"
-        };
-      }
-
-      return null;
-    },
-    [personas, resolveIntroMode]
-  );
-
-  useEffect(() => {
-    const defaultVoiceProfile = resolveDefaultVoiceProfile(selectedPersona);
-    if (defaultVoiceProfile && !hasCustomVoiceClone) {
-      if (voiceId !== defaultVoiceProfile.voiceId) {
-        setVoiceId(defaultVoiceProfile.voiceId);
-      }
-      const canOverwriteSample =
-        !sampleAudioUrl.trim() ||
-        sampleAudioUrl === SUPPORT_DEFAULT_VOICE_SAMPLE_AUDIO_URL ||
-        sampleAudioUrl === GENERAL_DEFAULT_VOICE_SAMPLE_AUDIO_URL;
-      if (canOverwriteSample && sampleAudioUrl !== defaultVoiceProfile.sampleAudioUrl) {
-        setSampleAudioUrl(defaultVoiceProfile.sampleAudioUrl);
-      }
-      return;
-    }
-
-    if (
-      !defaultVoiceProfile &&
-      !hasCustomVoiceClone &&
-      (voiceId === SUPPORT_DEFAULT_VOICE_ID || voiceId === GENERAL_DEFAULT_VOICE_ID)
-    ) {
-      setVoiceId(null);
-    }
-  }, [hasCustomVoiceClone, resolveDefaultVoiceProfile, sampleAudioUrl, selectedPersona, voiceId]);
 
   const resolveLive2DModelUrl = useCallback(
     (personaKey: string): string => {
@@ -1301,36 +1239,35 @@ export default function App() {
             )}
 
             {voiceMode === "existing" && (
-              <div style={{ maxHeight: 240, overflowY: "auto" }}>
+              <div>
                 {existingVoices.length === 0 ? (
                   <p className="voice-hint">暂无已有声音，请先克隆一个</p>
                 ) : (
-                  existingVoices.map(v => (
-                    <div
-                      key={v.voice_id}
-                      onClick={() => {
-                        setVoiceId(v.voice_id);
-                        if (avatarId) { updateAvatar(avatarId, { voice_id: v.voice_id } as any).catch(() => {}); }
-                      }}
-                      style={{
-                        display: "flex", alignItems: "center", justifyContent: "space-between",
-                        padding: "8px 10px", marginBottom: 6, borderRadius: 8, cursor: "pointer",
-                        border: voiceId === v.voice_id ? "1px solid #4059d4" : "1px solid #2c355f",
-                        background: voiceId === v.voice_id ? "rgba(64,89,212,0.1)" : "#131a3f",
+                  <>
+                    <select
+                      value={voiceId || ""}
+                      onChange={(e) => {
+                        const vid = e.target.value || null;
+                        setVoiceId(vid);
+                        if (vid) setHasCustomVoiceClone(true);
+                        if (avatarId) { updateAvatar(avatarId, { voice_id: vid || "" } as any).catch(() => {}); }
                       }}
                     >
-                      <div>
-                        <div style={{ fontSize: "0.85rem", color: "#e7ebff" }}>{v.speaker_name || v.voice_id}</div>
-                        <div style={{ fontSize: "0.7rem", color: "#5a6080" }}>{v.created_at || ""}</div>
-                      </div>
-                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                        {v.audio_url && (
-                          <button type="button" onClick={(e) => { e.stopPropagation(); new Audio(v.audio_url).play(); }} style={{ fontSize: "0.75rem", padding: "3px 8px", borderRadius: 6, border: "1px solid #4059d4", background: "rgba(64,89,212,0.1)", color: "#6b7ff5", cursor: "pointer" }}>▶</button>
-                        )}
-                        {voiceId === v.voice_id && <span style={{ fontSize: "0.7rem", color: "#4caf50" }}>✓ 当前</span>}
-                      </div>
-                    </div>
-                  ))
+                      <option value="">-- 请选择声音 --</option>
+                      {existingVoices.map(v => (
+                        <option key={v.voice_id} value={v.voice_id}>
+                          {v.speaker_name || v.voice_id}{v.created_at ? ` (${v.created_at.slice(0, 10)})` : ""}
+                        </option>
+                      ))}
+                    </select>
+                    {/* 选中声音后显示试听按钮 */}
+                    {voiceId && (() => {
+                      const selected = existingVoices.find(v => v.voice_id === voiceId);
+                      return selected?.audio_url ? (
+                        <button type="button" onClick={() => new Audio(selected.audio_url).play()} style={{ marginLeft: 8, fontSize: "0.8rem", padding: "4px 10px", borderRadius: 6, border: "1px solid #4059d4", background: "rgba(64,89,212,0.1)", color: "#6b7ff5", cursor: "pointer" }}>▶ 试听</button>
+                      ) : null;
+                    })()}
+                  </>
                 )}
               </div>
             )}
@@ -1354,16 +1291,6 @@ export default function App() {
                 清除音色
               </button>
             )}
-            <p className="voice-hint">
-              {(() => {
-                if (!voiceId) return "未创建音色：创建时将调用后端 /api/voice/create";
-                const defaultVoiceProfile = resolveDefaultVoiceProfile(selectedPersona);
-                if (!hasCustomVoiceClone && defaultVoiceProfile && voiceId === defaultVoiceProfile.voiceId) {
-                  return `音色已就绪：${voiceId}（${defaultVoiceProfile.label}）`;
-                }
-                return `音色已就绪：${voiceId}`;
-              })()}
-            </p>
             {voiceLatency && (
               <p className="voice-metrics">
                 合成延迟：首包 {voiceLatency.firstByteMs}ms / 全量 {voiceLatency.totalMs}ms /{" "}
