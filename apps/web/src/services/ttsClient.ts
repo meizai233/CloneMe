@@ -300,11 +300,41 @@ export class SentenceBuffer {
 
   /**
    * 刷新剩余内容（流结束时调用）
+   * 对剩余文本也执行断句，而不是整段发出
    */
   flush() {
+    // 先尝试对剩余内容断句
+    if (this.buffer.length > this.maxLength) {
+      // 强制触发断句：临时降低阈值
+      const saved = this.hardMaxLength;
+      this.hardMaxLength = this.maxLength;
+      this.push(""); // 触发 while 循环重新检查
+      this.hardMaxLength = saved;
+    }
+
+    // 发送最终剩余的内容
     const remaining = this.buffer.trim();
     if (remaining.length > 0) {
-      this.onSentence(remaining);
+      // 如果剩余内容还是很长，按 maxLength 强制拆分
+      if (remaining.length > this.maxLength) {
+        let pos = 0;
+        while (pos < remaining.length) {
+          const chunk = remaining.slice(pos, pos + this.maxLength);
+          // 尝试在断句符处切
+          const lastBreak = Math.max(
+            chunk.lastIndexOf('，'), chunk.lastIndexOf(','),
+            chunk.lastIndexOf('。'), chunk.lastIndexOf('！'),
+            chunk.lastIndexOf('？'), chunk.lastIndexOf('；'),
+            chunk.lastIndexOf('\n'), chunk.lastIndexOf('：'),
+          );
+          const cutAt = lastBreak > this.minLength ? lastBreak + 1 : chunk.length;
+          const piece = remaining.slice(pos, pos + cutAt).trim();
+          if (piece) this.onSentence(piece);
+          pos += cutAt;
+        }
+      } else {
+        this.onSentence(remaining);
+      }
     }
     this.buffer = "";
   }
