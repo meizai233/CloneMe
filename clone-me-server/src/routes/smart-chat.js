@@ -5,7 +5,7 @@
  * POST /api/personas    - 运行时新增/更新角色
  */
 import { Router } from 'express';
-import { chat } from '../services/llm.js';
+import { chat, chatStream } from '../services/llm.js';
 import { getSystemPrompt, listPersonas, getDefaultPersonaKey, upsertPersona } from '../services/persona.js';
 import { getHistory, appendRound, clearSession, searchRelevantMemories } from '../services/memory.js';
 import { retrieve } from '../services/rag.js';
@@ -91,27 +91,84 @@ router.post('/smart', async (req, res) => {
     messages.push(...history);
     messages.push({ role: 'user', content: userQuestion });
 
-    // 5. 调用 LLM
-    const result = await chat(messages, { temperature: 0.7, max_tokens: 1024 });
-    const reply = result.choices?.[0]?.message?.content || '抱歉，我暂时无法回答这个问题。';
+    // 5. 流式调用 LLM
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
 
-    // 6. 写入 Memory（带 userId 用于记忆库持久化）
-    console.log('[SmartChat] appendRound, sessionId:', sessionId, 'userId:', userId);
-    appendRound(sessionId, userQuestion, reply, userId);
+    const upstream = await chatStream(messages, { temperature: 0.7 });
+    let fullReply = '';
+    const decoder = new TextDecoder();
+    let sseBuffer = '';
 
-    // 7. 构建响应
-    res.json({
-      reply,
+    for await (const chunk of upstream.body) {
+      const text = decoder.decode(chunk, { stream: true });
+      sseBuffer += text;
+
+      const events = sseBuffer.split('\n\n');
+      sseBuffer = events.pop() || '';
+
+      for (const event of events) {
+        const lines = event.split('\n');
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) continue;
+          const jsonStr = trimmed.slice(5).trim();
+          if (jsonStr === '[DONE]' || !jsonStr) continue;
+          try {
+            const parsed = JSON.parse(jsonStr);
+            const delta = parsed.choices?.[0]?.delta;
+            if (delta?.content) {
+              fullReply += delta.content;
+              res.write(`data: ${JSON.stringify({ type: 'delta', content: delta.content })}\n\n`);
+            } else if (delta?.reasoning_content) {
+              res.write(`data: ${JSON.stringify({ type: 'thinking' })}\n\n`);
+            }
+          } catch { /* 跳过 */ }
+        }
+      }
+    }
+
+    // 处理 buffer 剩余
+    if (sseBuffer.trim()) {
+      for (const line of sseBuffer.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) continue;
+        const jsonStr = trimmed.slice(5).trim();
+        if (jsonStr === '[DONE]' || !jsonStr) continue;
+        try {
+          const parsed = JSON.parse(jsonStr);
+          if (parsed.choices?.[0]?.delta?.content) {
+            fullReply += parsed.choices[0].delta.content;
+            res.write(`data: ${JSON.stringify({ type: 'delta', content: parsed.choices[0].delta.content })}\n\n`);
+          }
+        } catch { /* 跳过 */ }
+      }
+    }
+
+    // 6. 写入 Memory
+    appendRound(sessionId, userQuestion, fullReply, userId);
+
+    // 7. 发送完成事件
+    res.write(`data: ${JSON.stringify({
+      type: 'done',
+      reply: fullReply,
       references: ragResults.map(r => r.content).slice(0, 3),
-      emotion: inferEmotion(reply),
+      emotion: inferEmotion(fullReply),
       audioUrl: '',
-      phonemeCues: generatePhonemeCues(reply),
+      phonemeCues: generatePhonemeCues(fullReply),
       sessionId,
       persona: personaKey || getDefaultPersonaKey(),
-    });
+    })}\n\n`);
+    res.end();
   } catch (err) {
     console.error('智能对话异常:', err.message);
-    res.status(500).json({ message: err.message });
+    if (!res.headersSent) {
+      res.status(500).json({ message: err.message });
+    } else {
+      res.write(`data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`);
+      res.end();
+    }
   }
 });
 

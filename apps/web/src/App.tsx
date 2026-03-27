@@ -548,6 +548,17 @@ export default function App() {
         persona: selectedPersona,
         sessionId,
         userId,
+        onThinking: () => {
+          setChatPhase("thinking");
+        },
+        onDelta: () => {
+          setChatPhase("typing");
+        },
+        onDeltaIncrement: (increment) => {
+          setChatPhase("typing");
+          pushTypewriterText(increment);
+          sentenceBuffer.push(increment);
+        },
       });
 
       // smartChat 是非流式，直接设置结果

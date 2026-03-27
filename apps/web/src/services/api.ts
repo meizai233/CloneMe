@@ -304,6 +304,76 @@ export async function smartChat(payload: {
   persona?: string;
   sessionId?: string;
   userId?: string;
+  onDelta?: (fullText: string) => void;
+  onDeltaIncrement?: (increment: string) => void;
+  onThinking?: () => void;
 }): Promise<SmartChatResponse> {
-  return requestJson<SmartChatResponse, typeof payload>("/api/chat/smart", payload);
+  const { onDelta, onDeltaIncrement, onThinking, ...body } = payload;
+
+  const response = await fetch(joinUrl(API_BASE_URL, "/api/chat/smart"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({})) as { message?: string };
+    throw new ApiError(err.message ?? "请求失败", response.status);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) throw new ApiError("无法读取流式响应");
+
+  const decoder = new TextDecoder();
+  let fullReply = "";
+  let result: SmartChatResponse | null = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    const text = decoder.decode(value, { stream: true });
+    const lines = text.split("\n").filter((l) => l.startsWith("data: "));
+
+    for (const line of lines) {
+      const jsonStr = line.slice(6).trim();
+      if (!jsonStr) continue;
+      try {
+        const parsed = JSON.parse(jsonStr);
+        if (parsed.type === "delta" && parsed.content) {
+          fullReply += parsed.content;
+          onDelta?.(fullReply);
+          onDeltaIncrement?.(parsed.content);
+        } else if (parsed.type === "thinking") {
+          onThinking?.();
+        } else if (parsed.type === "done") {
+          result = {
+            reply: parsed.reply,
+            references: parsed.references ?? [],
+            emotion: parsed.emotion ?? "neutral",
+            audioUrl: parsed.audioUrl ?? "",
+            phonemeCues: parsed.phonemeCues ?? [],
+            sessionId: parsed.sessionId,
+            persona: parsed.persona,
+          };
+        } else if (parsed.type === "error") {
+          throw new ApiError(parsed.message ?? "流式响应错误");
+        }
+      } catch (e) {
+        if (e instanceof ApiError) throw e;
+      }
+    }
+  }
+
+  if (!result) {
+    result = {
+      reply: fullReply || "回复异常",
+      references: [],
+      emotion: "neutral",
+      audioUrl: "",
+      phonemeCues: [],
+    };
+  }
+
+  return result;
 }
