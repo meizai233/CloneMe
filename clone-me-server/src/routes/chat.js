@@ -45,7 +45,7 @@ function generatePhonemeCues(text) {
   });
 }
 
-// 非流式对话（匹配前端 chatWithAvatar 的接口格式）
+// 对话（流式 SSE，边生成边返回）
 router.post('/', async (req, res) => {
   try {
     const { userQuestion, mode = 'teacher', voiceId } = req.body;
@@ -53,13 +53,9 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ message: 'userQuestion 不能为空' });
     }
 
-    // 构建消息列表
     const systemPrompt = PERSONA_PROMPTS[mode] || PERSONA_PROMPTS.teacher;
-    const messages = [
-      { role: 'system', content: systemPrompt },
-    ];
+    const messages = [{ role: 'system', content: systemPrompt }];
 
-    // 注入知识库上下文
     if (knowledgeContext.length > 0) {
       messages.push({
         role: 'system',
@@ -67,19 +63,58 @@ router.post('/', async (req, res) => {
       });
     }
 
+    // 限制回复长度，加快响应
+    messages.push({ role: 'system', content: '请简洁回答，控制在 200 字以内。' });
     messages.push({ role: 'user', content: userQuestion });
 
-    // 调用 LLM
-    const result = await chat(messages, { temperature: 0.8 });
-    const reply = result.choices?.[0]?.message?.content || '抱歉，我暂时无法回答这个问题。';
+    // 设置 SSE 响应头
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
 
-    // 推断情绪
-    const emotion = inferEmotion(reply);
+    // 调用 LLM 流式接口
+    const upstream = await chatStream(messages, { temperature: 0.8 });
 
-    // 生成口型数据
-    const phonemeCues = generatePhonemeCues(reply);
+    let fullReply = '';
+    const decoder = new TextDecoder();
 
-    // 从知识库中提取相关引用
+    // 逐 chunk 透传给前端
+    for await (const chunk of upstream.body) {
+      const text = decoder.decode(chunk, { stream: true });
+      // SSE 数据可能跨 chunk 拼接，按行分割
+      const lines = text.split('\n');
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) continue;
+        const jsonStr = trimmed.slice(5).trim();
+        if (jsonStr === '[DONE]') continue;
+        if (!jsonStr) continue;
+        try {
+          const parsed = JSON.parse(jsonStr);
+          const delta = parsed.choices?.[0]?.delta;
+          // Qwen3.5-plus 先输出 reasoning_content（思考），再输出 content（回复）
+          // 只取 content 字段作为实际回复
+          if (delta?.content) {
+            fullReply += delta.content;
+            res.write(`data: ${JSON.stringify({ type: 'delta', content: delta.content })}\n\n`);
+          } else if (delta?.reasoning_content) {
+            // 思考阶段：发送心跳让前端知道还在处理
+            res.write(`data: ${JSON.stringify({ type: 'thinking' })}\n\n`);
+          }
+          // 检查 finish_reason
+          const finishReason = parsed.choices?.[0]?.finish_reason;
+          if (finishReason === 'stop') {
+            // 流结束
+          }
+        } catch {
+          // JSON 解析失败跳过
+        }
+      }
+    }
+
+    // 流结束后发送完整结果
+    const emotion = inferEmotion(fullReply);
+    const phonemeCues = generatePhonemeCues(fullReply);
     const references = knowledgeContext.length > 0
       ? knowledgeContext.filter((doc) => {
           const keywords = userQuestion.split(/\s+/).filter((w) => w.length > 1);
@@ -87,15 +122,16 @@ router.post('/', async (req, res) => {
         }).slice(0, 3)
       : [];
 
-    res.json({
-      reply,
-      references,
-      emotion,
-      audioUrl: '', // TTS 音频由前端通过 WebSocket 获取，这里留空
-      phonemeCues,
-    });
+    res.write(`data: ${JSON.stringify({ type: 'done', reply: fullReply, emotion, phonemeCues, references, audioUrl: '' })}\n\n`);
+    res.end();
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    // 如果还没开始写 SSE，返回 JSON 错误
+    if (!res.headersSent) {
+      res.status(500).json({ message: err.message });
+    } else {
+      res.write(`data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`);
+      res.end();
+    }
   }
 });
 

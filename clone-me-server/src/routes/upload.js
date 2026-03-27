@@ -19,14 +19,9 @@ router.post('/audio', async (req, res) => {
     const base64Data = audioData.includes(',') ? audioData.split(',')[1] : audioData;
     const buffer = Buffer.from(base64Data, 'base64');
 
-    // 从 data URL 中提取 MIME 类型
-    let contentType = 'audio/webm';
-    if (audioData.startsWith('data:')) {
-      const mimeMatch = audioData.match(/^data:([^;]+);/);
-      if (mimeMatch) contentType = mimeMatch[1];
-    }
-
-    const safeName = (filename || `voice_${Date.now()}.webm`).replace(/[^a-zA-Z0-9._-]/g, '_');
+    // OSS 网关不支持 audio/webm，统一用 audio/mpeg 上传
+    const contentType = 'audio/mpeg';
+    const safeName = (filename || `voice_${Date.now()}.mp3`).replace(/[^a-zA-Z0-9._-]/g, '_');
 
     // 上传到 OSS，获取公网 URL
     const ossUrl = await uploadBufferToOSS(buffer, safeName, contentType);

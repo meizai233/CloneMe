@@ -13,6 +13,7 @@ import {
   getUploadUrl,
   type PersonaMode
 } from "./services/api";
+import { TTSClient, SentenceBuffer } from "./services/ttsClient";
 
 const modeLabels: Record<PersonaMode, string> = {
   teacher: "老师模式",
@@ -79,6 +80,8 @@ export default function App() {
   const stopLipSyncRef = useRef<(() => void) | null>(null);
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastActionRef = useRef<(() => Promise<void>) | null>(null);
+  const ttsClientRef = useRef<TTSClient | null>(null);
+  const sentenceBufferRef = useRef<SentenceBuffer | null>(null);
 
   const [mode, setMode] = useState<PersonaMode>("teacher");
   const [docsInput, setDocsInput] = useState(
@@ -162,14 +165,53 @@ export default function App() {
     });
 
     adapterRef.current = adapter;
-    void adapter.init("avatar-canvas");
+    // 延迟初始化，确保 canvas DOM 已完全挂载
+    const initTimer = setTimeout(() => {
+      void adapter.init("avatar-canvas");
+    }, 100);
 
     return () => {
+      clearTimeout(initTimer);
       cleanupPlayback();
       adapter.destroy();
       adapterRef.current = null;
     };
   }, [cleanupPlayback]);
+
+  // 初始化 TTS 客户端
+  useEffect(() => {
+    const ttsClient = new TTSClient({
+      voiceId: voiceId ?? undefined,
+      onSpeakingChange: (speaking) => {
+        adapterRef.current?.setSpeaking(speaking);
+        setIsSpeaking(speaking);
+      },
+      onMouthOpen: (value) => {
+        setMouthOpen(value);
+        // 同步到 Live2D 模型
+        const model = adapterRef.current;
+        if (model) {
+          (model as unknown as { setMouthOpen?: (v: number) => void }).setMouthOpen?.(value);
+        }
+      },
+    });
+    ttsClientRef.current = ttsClient;
+
+    // 预连接 TTS WebSocket
+    ttsClient.connect().catch(() => {
+      console.warn("[TTS] WebSocket 预连接失败，将在首次使用时重试");
+    });
+
+    return () => {
+      ttsClient.disconnect();
+      ttsClientRef.current = null;
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // voiceId 变化时更新 TTS 客户端
+  useEffect(() => {
+    ttsClientRef.current?.setVoiceId(voiceId ?? undefined);
+  }, [voiceId]);
 
   const playAnswerAudio = useCallback(
     async (audioUrl: string, cues: number[]) => {
@@ -347,11 +389,41 @@ export default function App() {
     }
 
     try {
+      // 停止之前的 TTS 播放
+      ttsClientRef.current?.stop();
+
+      // 确保 TTS 连接就绪
+      try {
+        await ttsClientRef.current?.connect();
+      } catch {
+        // TTS 连接失败不阻塞对话
+      }
+
+      // 创建句子缓冲器，每凑满一句就发送到 TTS
+      const sentenceBuffer = new SentenceBuffer((sentence) => {
+        ttsClientRef.current?.sendText(sentence);
+      });
+      sentenceBufferRef.current = sentenceBuffer;
+
       const data = await chatWithAvatar({
         userQuestion: safeQuestion,
         mode,
-        voiceId: voiceId ?? undefined
+        voiceId: voiceId ?? undefined,
+        onThinking: () => {
+          setAnswer("🤔 正在思考中...");
+        },
+        onDelta: (partialReply) => {
+          setAnswer(partialReply);
+        },
+        onDeltaIncrement: (increment) => {
+          // 增量文本送入句子缓冲器，凑满一句就发 TTS
+          sentenceBuffer.push(increment);
+        },
       });
+
+      // 刷新句子缓冲器中剩余的文本
+      sentenceBuffer.flush();
+      sentenceBufferRef.current = null;
 
       setAnswer(data.reply);
       setReferences(data.references);
@@ -449,8 +521,11 @@ export default function App() {
 
             <div className="recording-section">
               <span>录制语音样本（建议 10~20 秒）</span>
-              <div className="recording-prompt-text">
-                📖 参考朗读文本：「各位观众朋友大家好，欢迎收看本期节目。今天我们将深入探讨人工智能技术在日常生活中的应用与发展趋势。从智能语音助手到自动驾驶，从医疗诊断到金融风控，AI 正在以前所未有的速度改变着我们的世界。接下来，让我们一起走进这个充满无限可能的科技新时代。」
+              <div className="recording-prompt-tooltip">
+                <span className="recording-prompt-trigger">📖 查看参考朗读文本</span>
+                <div className="recording-prompt-popup">
+                  各位观众朋友大家好，欢迎收看本期节目。今天我们将深入探讨人工智能技术在日常生活中的应用与发展趋势。从智能语音助手到自动驾驶，从医疗诊断到金融风控，AI 正在以前所未有的速度改变着我们的世界。接下来，让我们一起走进这个充满无限可能的科技新时代。
+                </div>
               </div>
               <div className="recording-controls">
                 {!isRecording ? (
@@ -550,20 +625,25 @@ export default function App() {
           runtime={runtime}
           runtimeError={avatarRuntimeError}
         />
-        <details className="answer-box">
-          <summary>分身回复（点击展开）</summary>
-          <p>{answer}</p>
+        <div className="chat-dialog">
+          <div className="chat-dialog-header">
+            <span>💬 分身回复</span>
+            {chatLoading && <span className="chat-typing">输入中...</span>}
+          </div>
+          <div className="chat-dialog-body">
+            <p>{answer}</p>
+          </div>
           {references.length > 0 && (
-            <>
+            <div className="chat-dialog-refs">
               <h4>参考知识</h4>
               <ul>
                 {references.map((item) => (
                   <li key={item}>{item}</li>
                 ))}
               </ul>
-            </>
+            </div>
           )}
-        </details>
+        </div>
       </section>
     </main>
   );
