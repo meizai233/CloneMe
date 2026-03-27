@@ -474,6 +474,10 @@ export default function App() {
       // 刷新句子缓冲器中剩余的文本
       sentenceBuffer.flush();
       sentenceBufferRef.current = null;
+
+      // 通知 TTS 所有文本已发完，可以 finish task
+      ttsClientRef.current?.finishCurrentTask();
+
       stopTypewriter();
 
       setAnswer(data.reply);

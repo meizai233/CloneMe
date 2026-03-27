@@ -214,6 +214,15 @@ export class TTSClient {
   }
 
   /**
+   * 通知后端当前 task 的所有文本已发完
+   */
+  finishCurrentTask() {
+    if (this.connected && this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ action: 'finish' }));
+    }
+  }
+
+  /**
    * 更新 voiceId
    */
   setVoiceId(voiceId: string | undefined) {

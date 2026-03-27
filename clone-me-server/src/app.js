@@ -72,7 +72,7 @@ ttsWss.on('connection', (clientWs) => {
         console.log('[TTS] Sent finish-task (debounced)');
       }
       finishTimer = null;
-    }, 800); // 800ms 内没有新文本就 finish
+    }, 3000); // 3 秒内没有新文本才 finish，给 LLM 流式输出留足时间
   }
 
   /**
