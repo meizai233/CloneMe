@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   createLive2DAdapter,
   type AvatarEmotion,
@@ -35,6 +35,7 @@ function Avatar2D(props: {
   const { speaking, emotion, mouthOpen, ready, runtime, runtimeError } = props;
   const emotionClass = `emotion-${emotion}`;
   const usingLive2D = runtime === "live2d";
+  const mockFxStyle = { "--mock-pulse": `${0.8 + mouthOpen * 1.6}` } as CSSProperties;
 
   return (
     <div className={`avatar-card ${emotionClass}`}>
@@ -42,15 +43,12 @@ function Avatar2D(props: {
         <canvas id="avatar-canvas" className={`avatar-canvas ${usingLive2D ? "visible" : ""}`} />
 
         {!usingLive2D && (
-          <div className="avatar-face">
-            <div className="eyes">
-              <span />
-              <span />
-            </div>
-            <div
-              className={`mouth ${speaking ? "speaking" : ""}`}
-              style={{ transform: `scaleY(${0.65 + mouthOpen * 0.85})` }}
-            />
+          <div className={`mock-fx ${speaking ? "is-speaking" : ""}`} style={mockFxStyle}>
+            <div className="mock-fx-core" />
+            <div className="mock-fx-ring mock-fx-ring-a" />
+            <div className="mock-fx-ring mock-fx-ring-b" />
+            <div className="mock-fx-ring mock-fx-ring-c" />
+            <div className="mock-fx-grid" />
           </div>
         )}
       </div>
