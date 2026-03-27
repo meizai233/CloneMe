@@ -15,6 +15,7 @@ import chatRouter from './routes/chat.js';
 import imageRouter from './routes/image.js';
 import videoRouter from './routes/video.js';
 import embeddingRouter from './routes/embedding.js';
+import voiceCloneRouter from './routes/voice-clone.js';
 
 const app = express();
 app.use(cors());
@@ -25,6 +26,7 @@ app.use('/api/chat', chatRouter);
 app.use('/api/image', imageRouter);
 app.use('/api/video', videoRouter);
 app.use('/api/embedding', embeddingRouter);
+app.use('/api/voice', voiceCloneRouter);
 
 // 健康检查
 app.get('/api/health', (req, res) => {
@@ -126,6 +128,10 @@ server.listen(PORT, () => {
   console.log(`   POST /api/video/create   - 视频生成`);
   console.log(`   GET  /api/video/task/:id - 查询视频任务`);
   console.log(`   POST /api/embedding      - 文本向量化`);
+  console.log(`   POST /api/voice/create   - 创建克隆声音`);
+  console.log(`   GET  /api/voice/list     - 查询声音列表`);
+  console.log(`   GET  /api/voice/:id      - 查询声音状态`);
+  console.log(`   DEL  /api/voice/:id      - 删除声音`);
   console.log(`🔌 WebSocket:`);
   console.log(`   ws://localhost:${PORT}/ws/tts - TTS 语音合成`);
   console.log(`   ws://localhost:${PORT}/ws/asr - ASR 语音识别`);
