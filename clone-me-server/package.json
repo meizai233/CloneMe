@@ -1,0 +1,16 @@
+{
+  "name": "clone-me-server",
+  "version": "1.0.0",
+  "description": "CloneMe 数字人后端服务 - 封装所有大模型平台能力",
+  "type": "module",
+  "main": "src/app.js",
+  "scripts": {
+    "start": "node src/app.js",
+    "dev": "node --watch src/app.js"
+  },
+  "dependencies": {
+    "express": "^4.18.0",
+    "cors": "^2.8.5",
+    "ws": "^8.16.0"
+  }
+}
