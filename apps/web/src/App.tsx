@@ -126,7 +126,13 @@ export default function App() {
   const [thinkingDots, setThinkingDots] = useState("");
 
   // 每次页面加载生成新的 userId，刷新页面后自动更换
-  const [userId] = useState(() => `user_${crypto.randomUUID()}`);
+  const [userId] = useState(() => {
+    // crypto.randomUUID 仅在安全上下文（HTTPS/localhost）可用，降级使用 Math.random
+    const uuid = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : 'xxxx-xxxx-xxxx'.replace(/x/g, () => Math.floor(Math.random() * 16).toString(16));
+    return `user_${uuid}`;
+  });
 
   const loading = initLoading || chatLoading || voiceCloneLoading;
   const statusLabel = initLoading ? "初始化中" : chatLoading ? "思考中" : isSpeaking ? "播报中" : "待机";
