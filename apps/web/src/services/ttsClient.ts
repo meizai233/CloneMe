@@ -257,17 +257,30 @@ export class SentenceBuffer {
         cutIdx = strongMatch.index + 1;
       }
 
-      // 规则 2：如果没有强断句符，但超过 maxLength，在逗号/分号/顿号处断句
+      // 规则 2：如果没有强断句符，但超过 maxLength，在逗号/分号/顿号/冒号处断句
       if (cutIdx === -1 && this.buffer.length >= this.maxLength) {
-        const weakMatch = this.buffer.match(/[，,；;、：:]/);
-        if (weakMatch && weakMatch.index !== undefined && weakMatch.index >= this.minLength) {
-          cutIdx = weakMatch.index + 1;
+        // 从 minLength 位置开始搜索，避免在太前面断句
+        const searchFrom = this.buffer.slice(this.minLength);
+        const weakMatch = searchFrom.match(/[，,；;、：:）)]/);
+        if (weakMatch && weakMatch.index !== undefined) {
+          cutIdx = this.minLength + weakMatch.index + 1;
         }
       }
 
-      // 规则 3：如果还是没有断句点，但超过 hardMaxLength，强制在 maxLength 处截断
+      // 规则 3：如果还是没有断句点，但超过 hardMaxLength，在最近的空格或直接截断
       if (cutIdx === -1 && this.buffer.length >= this.hardMaxLength) {
-        cutIdx = this.maxLength;
+        // 尝试在 maxLength 附近找一个弱断句符
+        const nearCut = this.buffer.slice(0, this.hardMaxLength);
+        const lastWeak = Math.max(
+          nearCut.lastIndexOf('，'),
+          nearCut.lastIndexOf(','),
+          nearCut.lastIndexOf('。'),
+          nearCut.lastIndexOf('；'),
+          nearCut.lastIndexOf('、'),
+          nearCut.lastIndexOf('：'),
+          nearCut.lastIndexOf(' '),
+        );
+        cutIdx = lastWeak > this.minLength ? lastWeak + 1 : this.maxLength;
       }
 
       if (cutIdx === -1) break; // 没有断句点且长度未超限，等更多文本
