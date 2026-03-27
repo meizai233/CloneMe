@@ -139,7 +139,7 @@ export default function VoiceWorkshopPage() {
 
       <header className="sticky top-0 z-50 backdrop-blur-xl bg-[#0f1220]/80 border-b border-[#2c355f]">
         <div className="max-w-3xl mx-auto px-6 h-14 flex items-center gap-4">
-          <button onClick={() => navigate(avatarId ? `/avatar/${avatarId}` : "/dashboard")} className="text-sm text-[#b8c1ef] hover:text-white transition-colors">← 返回</button>
+          <button onClick={() => navigate(avatarId ? `/avatar/${avatarId}/chat` : "/dashboard")} className="text-sm text-[#b8c1ef] hover:text-white transition-colors">← 返回</button>
           <h2 className="text-sm font-medium text-[#e7ebff]">🎙️ 声音工坊</h2>
         </div>
       </header>

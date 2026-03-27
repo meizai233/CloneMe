@@ -32,11 +32,21 @@ export default function DashboardPage() {
   ];
 
   return (
-    <div className="min-h-screen bg-[#0f1220] relative">
-      <div className="fixed top-[-300px] left-1/4 w-[800px] h-[600px] bg-[#4059d4]/8 rounded-full blur-[150px] pointer-events-none" />
+    <div className="min-h-screen bg-[#0a0e1a] relative overflow-hidden">
+      {/* 背景装饰层 */}
+      <div className="fixed inset-0 pointer-events-none">
+        {/* 顶部大光晕 */}
+        <div className="absolute top-[-200px] left-1/4 w-[800px] h-[500px] bg-[#4059d4]/6 rounded-full blur-[160px]" />
+        {/* 右下角光晕 */}
+        <div className="absolute bottom-[-150px] right-[-100px] w-[600px] h-[400px] bg-[#5062b8]/5 rounded-full blur-[140px]" />
+        {/* 网格背景 */}
+        <div className="absolute inset-0 opacity-[0.03]" style={{ backgroundImage: "linear-gradient(#b8c1ef 1px, transparent 1px), linear-gradient(90deg, #b8c1ef 1px, transparent 1px)", backgroundSize: "60px 60px" }} />
+        {/* 顶部渐变遮罩 */}
+        <div className="absolute top-0 left-0 right-0 h-[300px] bg-gradient-to-b from-[#0f1428]/80 to-transparent" />
+      </div>
 
       {/* 顶栏 */}
-      <header className="sticky top-0 z-50 backdrop-blur-xl bg-[#0f1220]/95 border-b border-[#2c355f]">
+      <header className="sticky top-0 z-50 backdrop-blur-xl bg-[#0a0e1a]/90 border-b border-[#1e2545]">
         <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
           {/* 左侧：Logo + 导航 */}
           <div className="flex items-center gap-10">
@@ -75,6 +85,7 @@ export default function DashboardPage() {
         </div>
       </header>
 
+      {/* 内容区域 - 带侧边装饰线 */}
       <main className="max-w-6xl mx-auto px-6 py-8 relative z-10">
 
         {tab === "avatars" && <AvatarsTab navigate={navigate} />}
