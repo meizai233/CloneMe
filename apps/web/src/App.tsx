@@ -33,6 +33,12 @@ const INTERNAL_KNOWLEDGE_DOCS = [
 const HARU_MODEL_URL = "/models/haru_greeter_pro_jp/runtime/haru_greeter_t05.model3.json";
 const NATORI_MODEL_URL = "/models/natori_pro_zh/runtime/natori_pro_t06.model3.json";
 const PERSONA_STORAGE_KEY = "cloneme.selectedPersona";
+const SUPPORT_DEFAULT_VOICE_SAMPLE_AUDIO_URL =
+  "https://oho-image-cdn.51downapp.cn/ohoKiroUpload/beaee4f1bcf44d2aa0381a885c5adc02_voice_1774599906915.webm";
+const SUPPORT_DEFAULT_VOICE_ID = "cosyvoice-v2-wanyan-81856f33a9854efe9146c08b67612297";
+const GENERAL_DEFAULT_VOICE_SAMPLE_AUDIO_URL =
+  "https://oho-image-cdn.51downapp.cn/ohoKiroUpload/aa6dba6a16334fccb905776fc3fdfdfe_voice_1774593069461.webm";
+const GENERAL_DEFAULT_VOICE_ID = "cosyvoice-v2-cloneme-de1186494da24f33992ab554e7ce480e";
 const ALL_AVATAR_EMOTIONS: AvatarEmotion[] = [
   "neutral",
   "happy",
@@ -54,6 +60,27 @@ const ALL_AVATAR_GESTURES: AvatarGesture[] = [
   "discountHighlight",
   "comfortExplain",
 ];
+const EMOTION_LABELS: Record<AvatarEmotion, string> = {
+  neutral: "自然",
+  happy: "愉快",
+  thinking: "思考中",
+  excited: "兴奋",
+  confident: "自信",
+  warm: "温和",
+  serious: "严肃",
+  surprised: "惊讶",
+};
+const GESTURE_LABELS: Record<AvatarGesture, string> = {
+  none: "无",
+  nod: "点头",
+  emphasis: "强调",
+  thinking: "思考手势",
+  clap: "拍手",
+  openArms: "张开双臂",
+  promoPitch: "讲解推荐",
+  discountHighlight: "优惠强调",
+  comfortExplain: "安抚解释",
+};
 
 function Avatar2D(props: {
   speaking: boolean;
@@ -63,8 +90,10 @@ function Avatar2D(props: {
   runtime: AvatarRuntime;
   runtimeError: string | null;
   canvasRef: RefObject<HTMLCanvasElement | null>;
+  modelLabel: string;
+  currentGesture: AvatarGesture;
 }) {
-  const { speaking, emotion, mouthOpen, ready, runtime, runtimeError, canvasRef } = props;
+  const { speaking, emotion, mouthOpen, ready, runtime, runtimeError, canvasRef, modelLabel, currentGesture } = props;
   const emotionClass = `emotion-${emotion}`;
   const usingLive2D = runtime === "live2d";
   const showLoader = !ready;
@@ -137,8 +166,8 @@ function Avatar2D(props: {
       </p>
       {!usingLive2D && runtimeError && <p className="avatar-runtime-error">Live2D 错误：{runtimeError}</p>}
       <p className="avatar-status">
-        状态：{ready ? "模型已就绪" : "模型加载中"} /{" "}
-        {emotion === "thinking" ? "思考中" : emotion === "happy" ? "愉快" : "自然"} /{" "}
+        状态：{ready ? "模型已就绪" : "模型加载中"} / 模型：{modelLabel} / 情绪：{EMOTION_LABELS[emotion]} / 动作：
+        {GESTURE_LABELS[currentGesture]} / 口型：{Math.round(mouthOpen * 100)}% / 语音：
         {speaking ? "播报中" : "待机"}
       </p>
     </div>
@@ -158,6 +187,7 @@ export default function App() {
   const typingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastGestureRef = useRef<AvatarGesture>("none");
   const lastGestureAtRef = useRef(0);
+  const gestureResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [personas, setPersonas] = useState<PersonaInfo[]>([]);
   const [selectedPersona, setSelectedPersona] = useState<string>(() => {
@@ -174,6 +204,8 @@ export default function App() {
   const [references, setReferences] = useState<string[]>([]);
   const [emotion, setEmotion] = useState<AvatarEmotion>("happy");
   const [runtime, setRuntime] = useState<AvatarRuntime>("mock");
+  const [activeModelUrl, setActiveModelUrl] = useState(HARU_MODEL_URL);
+  const [activeGesture, setActiveGesture] = useState<AvatarGesture>("none");
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [mouthOpen, setMouthOpen] = useState(0);
   const [initLoading, setInitLoading] = useState(false);
@@ -182,6 +214,7 @@ export default function App() {
   const [avatarRuntimeError, setAvatarRuntimeError] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [voiceId, setVoiceId] = useState<string | null>(null);
+  const [hasCustomVoiceClone, setHasCustomVoiceClone] = useState(false);
   const [consentConfirmed, setConsentConfirmed] = useState(false);
   const [speakerName, setSpeakerName] = useState("我的音色");
   const [sampleAudioUrl, setSampleAudioUrl] = useState("");
@@ -266,6 +299,7 @@ export default function App() {
   const stopModeIntroSpeech = useCallback(() => {
     introStopLipSyncRef.current?.();
     introStopLipSyncRef.current = null;
+    ttsClientRef.current?.stop();
     adapterRef.current?.setSpeaking(false);
   }, []);
 
@@ -273,7 +307,24 @@ export default function App() {
     introRunIdRef.current += 1;
     clearIntroTimers();
     stopModeIntroSpeech();
+    setActiveGesture("none");
   }, [clearIntroTimers, stopModeIntroSpeech]);
+
+  const markGesture = useCallback((gesture: AvatarGesture) => {
+    if (gestureResetTimerRef.current) {
+      clearTimeout(gestureResetTimerRef.current);
+      gestureResetTimerRef.current = null;
+    }
+    if (gesture === "none") {
+      setActiveGesture("none");
+      return;
+    }
+    setActiveGesture(gesture);
+    gestureResetTimerRef.current = setTimeout(() => {
+      setActiveGesture("none");
+      gestureResetTimerRef.current = null;
+    }, 2200);
+  }, []);
 
   const runModeIntro = useCallback(
     async (targetMode: PersonaMode) => {
@@ -286,6 +337,19 @@ export default function App() {
       setErrorMessage(null);
       setReferences([]);
       setAnswer(`虚拟形象名称：${script.avatarName}`);
+      const ttsClient = ttsClientRef.current;
+      if (ttsClient) {
+        const introVoiceId =
+          targetMode === "support" && !hasCustomVoiceClone
+            ? SUPPORT_DEFAULT_VOICE_ID
+            : (voiceId ?? undefined);
+        ttsClient.setVoiceId(introVoiceId);
+        try {
+          await ttsClient.connect();
+        } catch {
+          // TTS 连接失败时仍保留口型驱动和文案展示。
+        }
+      }
       await waitWithIntroTimer(500);
       if (runId !== introRunIdRef.current) return;
 
@@ -293,21 +357,36 @@ export default function App() {
         if (runId !== introRunIdRef.current) return;
         adapterRef.current?.setEmotion(item.emotion);
         adapterRef.current?.playGesture(item.gesture);
+        markGesture(item.gesture);
         setAnswer((prev) => `${prev}\n${item.text}`);
         stopModeIntroSpeech();
         introStopLipSyncRef.current = adapterRef.current?.playLipSync(item.cues) ?? null;
         adapterRef.current?.setSpeaking(true);
+        const narration = item.text.replace(/（[^）]*）/g, "").trim();
+        if (narration) {
+          ttsClient?.sendText(narration);
+        }
         await waitWithIntroTimer(item.durationMs);
         if (runId !== introRunIdRef.current) return;
         stopModeIntroSpeech();
         await waitWithIntroTimer(320);
       }
 
+      ttsClient?.finishCurrentTask();
+
       if (runId === introRunIdRef.current) {
         adapterRef.current?.setEmotion("happy");
       }
     },
-    [avatarReady, stopModeIntro, stopModeIntroSpeech, waitWithIntroTimer]
+    [
+      avatarReady,
+      hasCustomVoiceClone,
+      markGesture,
+      stopModeIntro,
+      stopModeIntroSpeech,
+      voiceId,
+      waitWithIntroTimer
+    ]
   );
 
   const pushTypewriterText = useCallback((chunkText: string) => {
@@ -383,6 +462,57 @@ export default function App() {
     },
     [personas]
   );
+
+  const resolveDefaultVoiceProfile = useCallback(
+    (personaKey: string): { voiceId: string; sampleAudioUrl: string; label: string } | null => {
+      const matchedPersona = personas.find((item) => item.key === personaKey);
+      const personaText = `${personaKey} ${matchedPersona?.name ?? ""}`.toLowerCase();
+
+      if (personaKey === "general" || personaText.includes("通用") || personaText.includes("general")) {
+        return {
+          voiceId: GENERAL_DEFAULT_VOICE_ID,
+          sampleAudioUrl: GENERAL_DEFAULT_VOICE_SAMPLE_AUDIO_URL,
+          label: "通用助手默认"
+        };
+      }
+
+      if (resolveIntroMode(personaKey) === "support") {
+        return {
+          voiceId: SUPPORT_DEFAULT_VOICE_ID,
+          sampleAudioUrl: SUPPORT_DEFAULT_VOICE_SAMPLE_AUDIO_URL,
+          label: "售前客服默认"
+        };
+      }
+
+      return null;
+    },
+    [personas, resolveIntroMode]
+  );
+
+  useEffect(() => {
+    const defaultVoiceProfile = resolveDefaultVoiceProfile(selectedPersona);
+    if (defaultVoiceProfile && !hasCustomVoiceClone) {
+      if (voiceId !== defaultVoiceProfile.voiceId) {
+        setVoiceId(defaultVoiceProfile.voiceId);
+      }
+      const canOverwriteSample =
+        !sampleAudioUrl.trim() ||
+        sampleAudioUrl === SUPPORT_DEFAULT_VOICE_SAMPLE_AUDIO_URL ||
+        sampleAudioUrl === GENERAL_DEFAULT_VOICE_SAMPLE_AUDIO_URL;
+      if (canOverwriteSample && sampleAudioUrl !== defaultVoiceProfile.sampleAudioUrl) {
+        setSampleAudioUrl(defaultVoiceProfile.sampleAudioUrl);
+      }
+      return;
+    }
+
+    if (
+      !defaultVoiceProfile &&
+      !hasCustomVoiceClone &&
+      (voiceId === SUPPORT_DEFAULT_VOICE_ID || voiceId === GENERAL_DEFAULT_VOICE_ID)
+    ) {
+      setVoiceId(null);
+    }
+  }, [hasCustomVoiceClone, resolveDefaultVoiceProfile, sampleAudioUrl, selectedPersona, voiceId]);
 
   const resolveLive2DModelUrl = useCallback(
     (personaKey: string): string => {
@@ -477,6 +607,10 @@ export default function App() {
       stopModeIntro();
       cleanupPlayback();
       stopTypewriter();
+      if (gestureResetTimerRef.current) {
+        clearTimeout(gestureResetTimerRef.current);
+        gestureResetTimerRef.current = null;
+      }
       adapter.destroy();
       adapterRef.current = null;
     };
@@ -499,6 +633,8 @@ export default function App() {
         if (cancelled) return;
         const renderableModelUrl = await resolveRenderableModelUrl(modelUrl);
         if (cancelled) return;
+        setActiveModelUrl(renderableModelUrl);
+        setActiveGesture("none");
         await adapter.init(avatarCanvasRef.current ?? "avatar-canvas", renderableModelUrl);
       })();
     }, 100);
@@ -687,6 +823,7 @@ export default function App() {
         targetModel: targetModel.trim() || "cosyvoice-v2"
       });
       setVoiceId(data.voiceId);
+      setHasCustomVoiceClone(true);
       setAnswer("音色创建完成。现在提问时将优先使用克隆语音播报。");
       setReferences([]);
       adapterRef.current?.setEmotion("happy");
@@ -714,6 +851,10 @@ export default function App() {
   }, []);
 
   const runAsk = useCallback(async () => {
+    // 提问优先级最高：先硬中断当前自动播报/口型，再进入新一轮问答。
+    ttsClientRef.current?.stop();
+    sentenceBufferRef.current?.reset();
+    sentenceBufferRef.current = null;
     stopModeIntro();
     setChatLoading(true);
     setChatPhase("thinking");
@@ -798,6 +939,7 @@ export default function App() {
         candidateGestures.find((item) => modelCapability.allowedGestures.includes(item)) ?? "none";
       if (chosenGesture !== "none") {
         adapterRef.current?.playGesture(chosenGesture);
+        markGesture(chosenGesture);
       }
 
       if (data.audioUrl) {
@@ -829,6 +971,7 @@ export default function App() {
     cleanupPlayback,
     normalizeEmotion,
     normalizeGesture,
+    markGesture,
     selectedPersona,
     sessionId,
     userId,
@@ -960,6 +1103,7 @@ export default function App() {
                 type="button"
                 onClick={() => {
                   setVoiceId(null);
+                  setHasCustomVoiceClone(false);
                   setVoiceLatency(null);
                 }}
                 disabled={loading}
@@ -968,9 +1112,14 @@ export default function App() {
               </button>
             )}
             <p className="voice-hint">
-              {voiceId
-                ? `音色已就绪：${voiceId}`
-                : "未创建音色：创建时将调用后端 /api/voice/create"}
+              {(() => {
+                if (!voiceId) return "未创建音色：创建时将调用后端 /api/voice/create";
+                const defaultVoiceProfile = resolveDefaultVoiceProfile(selectedPersona);
+                if (!hasCustomVoiceClone && defaultVoiceProfile && voiceId === defaultVoiceProfile.voiceId) {
+                  return `音色已就绪：${voiceId}（${defaultVoiceProfile.label}）`;
+                }
+                return `音色已就绪：${voiceId}`;
+              })()}
             </p>
             {voiceLatency && (
               <p className="voice-metrics">
@@ -1011,6 +1160,8 @@ export default function App() {
           runtime={runtime}
           runtimeError={avatarRuntimeError}
           canvasRef={avatarCanvasRef}
+          modelLabel={resolveAvatarModelCapability(activeModelUrl).modelLabel}
+          currentGesture={activeGesture}
         />
         <div className="chat-dialog">
           <div className="chat-dialog-header">
