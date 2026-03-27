@@ -481,17 +481,9 @@ export default function App() {
       adapterRef.current?.setEmotion(data.emotion);
       setVoiceLatency(data.latency ?? null);
 
-      if (data.audioUrl) {
-        try {
-          await playAnswerAudio(data.audioUrl, data.phonemeCues);
-        } catch {
-          setErrorMessage("语音播放失败，已回退到离线口型演示。");
-          playFallbackLipSync(data.phonemeCues);
-        }
-      } else {
-        if (voiceId) {
-          setErrorMessage("语音服务降级为文本回复，已使用口型演示兜底。");
-        }
+      // 音频通过 TTS WebSocket 通道播放，不再依赖 audioUrl
+      // 如果 TTS WebSocket 未连接，使用 fallback 口型动画
+      if (!ttsClientRef.current || !voiceId) {
         playFallbackLipSync(data.phonemeCues);
       }
     } catch (error) {
