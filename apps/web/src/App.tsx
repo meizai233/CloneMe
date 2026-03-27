@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createLive2DAdapter,
   type AvatarEmotion,
@@ -35,7 +35,7 @@ function Avatar2D(props: {
   const { speaking, emotion, mouthOpen, ready, runtime, runtimeError } = props;
   const emotionClass = `emotion-${emotion}`;
   const usingLive2D = runtime === "live2d";
-  const mockFxStyle = { "--mock-pulse": `${0.8 + mouthOpen * 1.6}` } as CSSProperties;
+  const showLoader = !ready;
 
   return (
     <div className={`avatar-card ${emotionClass}`}>
@@ -43,12 +43,16 @@ function Avatar2D(props: {
         <canvas id="avatar-canvas" className={`avatar-canvas ${usingLive2D ? "visible" : ""}`} />
 
         {!usingLive2D && (
-          <div className={`mock-fx ${speaking ? "is-speaking" : ""}`} style={mockFxStyle}>
-            <div className="mock-fx-core" />
-            <div className="mock-fx-ring mock-fx-ring-a" />
-            <div className="mock-fx-ring mock-fx-ring-b" />
-            <div className="mock-fx-ring mock-fx-ring-c" />
-            <div className="mock-fx-grid" />
+          <div className={`avatar-loader-shell ${speaking ? "is-speaking" : ""}`}>
+            <div className="avatar-loader-core" style={{ transform: `scale(${1 + mouthOpen * 0.18})` }} />
+            <div className="avatar-loader-ring avatar-loader-ring-a" />
+            <div className="avatar-loader-ring avatar-loader-ring-b" />
+            <div className="avatar-loader-ring avatar-loader-ring-c" />
+            <div className="avatar-loader-grid" />
+            <div className="avatar-loader-text">
+              <strong>{showLoader ? "Live2D 载入中" : "Live2D 回退模式"}</strong>
+              <span>{showLoader ? "正在启动渲染核心..." : "模型暂不可用，已启用动态特效"}</span>
+            </div>
           </div>
         )}
       </div>
