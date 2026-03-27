@@ -25,8 +25,10 @@ export function createTTSConnection() {
  * 启动 TTS 任务（发送 run-task 指令）
  */
 export function startTTSTask(ws, taskId, voice = 'cosyvoice-v2-cloneme-dd0db46b2684401c8e555db6cf04e424') {
-  // 从 voiceId 中提取模型名（如 cosyvoice-v2）
-  const model = voice.match(/^(cosyvoice-[^-]+-?[^-]*)/)?.[0] || 'cosyvoice-v2';
+  // 模型名固定为 cosyvoice-v2（从 voiceId 前两段提取）
+  const parts = voice.split('-');
+  const model = parts.length >= 2 ? `${parts[0]}-${parts[1]}` : 'cosyvoice-v2';
+  console.log('[TTS] startTask model:', model, 'voice:', voice, 'taskId:', taskId);
 
   ws.send(JSON.stringify({
     header: {

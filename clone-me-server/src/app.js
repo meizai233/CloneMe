@@ -59,6 +59,7 @@ ttsWss.on('connection', (clientWs) => {
   clientWs.on('message', (data) => {
     try {
       const msg = JSON.parse(data.toString());
+      console.log('[TTS Proxy] Received from client:', JSON.stringify(msg).slice(0, 100));
 
       if (msg.text) {
         const voice = msg.voice || 'cherry';
@@ -78,25 +79,36 @@ ttsWss.on('connection', (clientWs) => {
           upstream.on('message', (upData) => {
             if (Buffer.isBuffer(upData)) {
               const str = upData.toString('utf8');
-              try {
-                const upMsg = JSON.parse(str);
-                if (upMsg.header?.event === 'task-started') {
-                  taskStarted = true;
-                  clientWs.send(JSON.stringify({ type: 'connected' }));
-                  // 发送积压的文本
-                  sendTTSText(upstream, taskId, msg.text);
-                } else if (upMsg.header?.event === 'task-finished') {
-                  // 任务结束，关闭上游连接以便下次创建新的
-                  upstream.close();
-                  upstream = null;
-                  taskStarted = false;
+              // DashScope 返回两种消息：JSON 控制消息和二进制音频
+              // JSON 消息以 { 开头
+              if (str.charAt(0) === '{') {
+                try {
+                  const upMsg = JSON.parse(str);
+                  console.log('[TTS] Event:', upMsg.header?.event, upMsg.payload?.output?.type || '');
+                  if (upMsg.header?.event === 'task-started') {
+                    taskStarted = true;
+                    clientWs.send(JSON.stringify({ type: 'connected' }));
+                    sendTTSText(upstream, taskId, msg.text);
+                    // 发完文本后发送 finish 信号触发音频生成
+                    setTimeout(() => {
+                      if (upstream && upstream.readyState === 1) {
+                        finishTTSTask(upstream, taskId);
+                        console.log('[TTS] Sent finish-task after initial text');
+                      }
+                    }, 300);
+                  } else if (upMsg.header?.event === 'task-finished') {
+                    upstream.close();
+                    upstream = null;
+                    taskStarted = false;
+                  }
+                } catch {
+                  console.log('[TTS] JSON parse failed, forwarding as audio, size:', upData.length);
+                  if (clientWs.readyState === 1) clientWs.send(upData);
                 }
-                // 其他 JSON 消息忽略
-              } catch {
-                // 二进制音频数据 → 转发给客户端
-                if (clientWs.readyState === 1) {
-                  clientWs.send(upData);
-                }
+              } else {
+                // 非 JSON = 二进制音频数据
+                console.log('[TTS] Audio chunk:', upData.length, 'bytes');
+                if (clientWs.readyState === 1) clientWs.send(upData);
               }
             }
           });
@@ -114,6 +126,12 @@ ttsWss.on('connection', (clientWs) => {
         } else if (taskStarted) {
           // 连接已建立，直接发送文本
           sendTTSText(upstream, taskId, msg.text);
+          // 发完后 finish
+          setTimeout(() => {
+            if (upstream && upstream.readyState === 1) {
+              finishTTSTask(upstream, taskId);
+            }
+          }, 300);
         }
       }
 
