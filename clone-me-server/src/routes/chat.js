@@ -76,10 +76,11 @@ router.post('/', async (req, res) => {
     const upstream = await chatStream(messages, { temperature: 0.8 });
 
     let fullReply = '';
+    const decoder = new TextDecoder();
 
     // 逐 chunk 透传给前端
     for await (const chunk of upstream.body) {
-      const text = chunk.toString();
+      const text = decoder.decode(chunk, { stream: true });
       // SSE 数据可能跨 chunk 拼接，按行分割
       const lines = text.split('\n');
       for (const line of lines) {
@@ -96,6 +97,9 @@ router.post('/', async (req, res) => {
           if (delta?.content) {
             fullReply += delta.content;
             res.write(`data: ${JSON.stringify({ type: 'delta', content: delta.content })}\n\n`);
+          } else if (delta?.reasoning_content) {
+            // 思考阶段：发送心跳让前端知道还在处理
+            res.write(`data: ${JSON.stringify({ type: 'thinking' })}\n\n`);
           }
           // 检查 finish_reason
           const finishReason = parsed.choices?.[0]?.finish_reason;

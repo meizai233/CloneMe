@@ -409,6 +409,9 @@ export default function App() {
         userQuestion: safeQuestion,
         mode,
         voiceId: voiceId ?? undefined,
+        onThinking: () => {
+          setAnswer("🤔 正在思考中...");
+        },
         onDelta: (partialReply) => {
           setAnswer(partialReply);
         },

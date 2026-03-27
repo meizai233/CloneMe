@@ -53,7 +53,7 @@ export interface VoiceCloneDeleteResponse {
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3001";
-const REQUEST_TIMEOUT_MS = 120000;
+const REQUEST_TIMEOUT_MS = 300000;
 
 class ApiError extends Error {
   constructor(message: string, public readonly status?: number) {
@@ -142,8 +142,9 @@ export async function chatWithAvatar(payload: {
   voiceId?: string;
   onDelta?: (fullText: string) => void;
   onDeltaIncrement?: (increment: string) => void;
+  onThinking?: () => void;
 }): Promise<ChatResponse> {
-  const { onDelta, onDeltaIncrement, ...body } = payload;
+  const { onDelta, onDeltaIncrement, onThinking, ...body } = payload;
 
   const response = await fetch(joinUrl(API_BASE_URL, "/api/chat"), {
     method: "POST",
@@ -179,6 +180,8 @@ export async function chatWithAvatar(payload: {
           fullReply += parsed.content;
           onDelta?.(fullReply);
           onDeltaIncrement?.(parsed.content);
+        } else if (parsed.type === "thinking") {
+          onThinking?.();
         } else if (parsed.type === "done") {
           result = {
             reply: parsed.reply,
