@@ -9,6 +9,7 @@ import { WebSocketServer } from 'ws';
 import { PORT } from './config.js';
 import { createTTSConnection, startTTSTask, sendTTSText, finishTTSTask } from './services/tts.js';
 import { createASRConnection } from './services/asr.js';
+import { attachVoiceSession } from './services/voice-session.js';
 
 // HTTP 路由
 import chatRouter from './routes/chat.js';
@@ -228,6 +229,12 @@ asrWss.on('connection', (clientWs) => {
   upstream.on('error', () => upstream.close());
 });
 
+// WebSocket 服务器 - 统一语音会话编排（路径: /ws/voice-session）
+const voiceSessionWss = new WebSocketServer({ noServer: true });
+voiceSessionWss.on('connection', (clientWs) => {
+  attachVoiceSession(clientWs);
+});
+
 // WebSocket 升级路由分发
 server.on('upgrade', (request, socket, head) => {
   const { pathname } = new URL(request.url, `http://${request.headers.host}`);
@@ -239,6 +246,10 @@ server.on('upgrade', (request, socket, head) => {
   } else if (pathname === '/ws/asr') {
     asrWss.handleUpgrade(request, socket, head, (ws) => {
       asrWss.emit('connection', ws, request);
+    });
+  } else if (pathname === '/ws/voice-session') {
+    voiceSessionWss.handleUpgrade(request, socket, head, (ws) => {
+      voiceSessionWss.emit('connection', ws, request);
     });
   } else {
     socket.destroy();
@@ -265,4 +276,5 @@ server.listen(PORT, () => {
   console.log(`🔌 WebSocket:`);
   console.log(`   ws://localhost:${PORT}/ws/tts - TTS 语音合成`);
   console.log(`   ws://localhost:${PORT}/ws/asr - ASR 语音识别`);
+  console.log(`   ws://localhost:${PORT}/ws/voice-session - 实时语音全链路会话`);
 });

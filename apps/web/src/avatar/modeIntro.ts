@@ -19,14 +19,14 @@ export const avatarIntroScripts: Partial<Record<PersonaMode, AvatarIntroScript>>
     avatarName: "哈小啰",
     segments: [
       {
-        text: "（卡顿音效） 嗨……我是………哈小啰………我……",
+        text: "（卡顿音效） 嗨，我是哈小啰，刚开机有点卡。",
         emotion: "thinking",
         gesture: "thinking",
         cues: [0.05, 0.25, 0.1, 0.35, 0.12, 0.28],
         durationMs: 2300
       },
       {
-        text: "（清晰流畅） （拍手，挺胸） 调试完毕！本尊正式上线——哈小啰，哈啰亲生的数字人~",
+        text: "（清晰流畅） （拍手，挺胸） 调试完成！哈小啰正式上线，哈啰数字人到位。",
         emotion: "excited",
         gesture: "promoPitch",
         cues: [0.2, 0.7, 0.45, 0.8, 0.35, 0.62],
