@@ -78,10 +78,6 @@ export default function App() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const stopLipSyncRef = useRef<(() => void) | null>(null);
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
-  const mediaSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
-  const lipSyncRafRef = useRef<number | null>(null);
   const lastActionRef = useRef<(() => Promise<void>) | null>(null);
 
   const [mode, setMode] = useState<PersonaMode>("teacher");
@@ -145,15 +141,6 @@ export default function App() {
       audioRef.current = null;
     }
 
-    if (lipSyncRafRef.current !== null) {
-      window.cancelAnimationFrame(lipSyncRafRef.current);
-      lipSyncRafRef.current = null;
-    }
-    mediaSourceRef.current?.disconnect();
-    mediaSourceRef.current = null;
-    analyserRef.current?.disconnect();
-    analyserRef.current = null;
-
     if (stopLipSyncRef.current) {
       stopLipSyncRef.current();
       stopLipSyncRef.current = null;
@@ -180,71 +167,9 @@ export default function App() {
     return () => {
       cleanupPlayback();
       adapter.destroy();
-      if (audioContextRef.current) {
-        void audioContextRef.current.close();
-        audioContextRef.current = null;
-      }
       adapterRef.current = null;
     };
   }, [cleanupPlayback]);
-
-  const startAudioAmplitudeLipSync = useCallback(
-    async (audio: HTMLAudioElement): Promise<(() => void) | null> => {
-      const AudioContextCtor = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-      if (!AudioContextCtor) {
-        return null;
-      }
-      if (!audioContextRef.current) {
-        audioContextRef.current = new AudioContextCtor();
-      }
-      if (audioContextRef.current.state === "suspended") {
-        await audioContextRef.current.resume();
-      }
-
-      const analyser = audioContextRef.current.createAnalyser();
-      analyser.fftSize = 1024;
-      analyser.smoothingTimeConstant = 0.75;
-      const source = audioContextRef.current.createMediaElementSource(audio);
-      source.connect(analyser);
-      analyser.connect(audioContextRef.current.destination);
-
-      analyserRef.current = analyser;
-      mediaSourceRef.current = source;
-      const waveform = new Uint8Array(analyser.fftSize);
-      let smoothed = 0;
-      let stopped = false;
-
-      const tick = () => {
-        if (stopped) return;
-        analyser.getByteTimeDomainData(waveform);
-        let sum = 0;
-        for (const sample of waveform) {
-          const centered = (sample - 128) / 128;
-          sum += centered * centered;
-        }
-        const rms = Math.sqrt(sum / waveform.length);
-        const mapped = Math.max(0, Math.min(1, (rms - 0.02) * 9));
-        smoothed = smoothed * 0.78 + mapped * 0.22;
-        adapterRef.current?.setMouthOpen(smoothed);
-        lipSyncRafRef.current = window.requestAnimationFrame(tick);
-      };
-
-      lipSyncRafRef.current = window.requestAnimationFrame(tick);
-      return () => {
-        stopped = true;
-        if (lipSyncRafRef.current !== null) {
-          window.cancelAnimationFrame(lipSyncRafRef.current);
-          lipSyncRafRef.current = null;
-        }
-        mediaSourceRef.current?.disconnect();
-        mediaSourceRef.current = null;
-        analyserRef.current?.disconnect();
-        analyserRef.current = null;
-        adapterRef.current?.setMouthOpen(0);
-      };
-    },
-    []
-  );
 
   const playAnswerAudio = useCallback(
     async (audioUrl: string, cues: number[]) => {
@@ -255,26 +180,17 @@ export default function App() {
         throw new Error("音频不可用");
       }
 
+      stopLipSyncRef.current = adapter.playLipSync(cues);
+
       const audio = new Audio(audioUrl);
-      audio.crossOrigin = "anonymous";
       audioRef.current = audio;
       audio.onplay = () => adapter.setSpeaking(true);
       audio.onended = () => cleanupPlayback();
       audio.onerror = () => cleanupPlayback();
 
-      if (cues.length > 0) {
-        stopLipSyncRef.current = adapter.playLipSync(cues);
-      } else {
-        try {
-          stopLipSyncRef.current = await startAudioAmplitudeLipSync(audio);
-        } catch {
-          stopLipSyncRef.current = adapter.playLipSync([0.22, 0.65, 0.38, 0.75, 0.28, 0.6]);
-        }
-      }
-
       await audio.play();
     },
-    [cleanupPlayback, startAudioAmplitudeLipSync]
+    [cleanupPlayback]
   );
 
   const playFallbackLipSync = useCallback(
