@@ -63,8 +63,12 @@ router.post('/', async (req, res) => {
       });
     }
 
-    // 限制回复长度，加快响应
-    messages.push({ role: 'system', content: '请简洁回答，控制在 200 字以内。' });
+    // 专家风格 + 快速输出：结论先行、控制长度、避免冗余
+    messages.push({
+      role: 'system',
+      content:
+        '请以专家口吻快速回答：先给结论，再给最多2条要点；总长度控制在80字以内；不要展示思考过程，不要输出推理细节。'
+    });
     messages.push({ role: 'user', content: userQuestion });
 
     // 设置 SSE 响应头
@@ -73,41 +77,40 @@ router.post('/', async (req, res) => {
     res.setHeader('Connection', 'keep-alive');
 
     // 调用 LLM 流式接口
-    const upstream = await chatStream(messages, { temperature: 0.8 });
+    const upstream = await chatStream(messages, { temperature: 0.2, max_tokens: 100 });
 
     let fullReply = '';
+    let sseBuffer = '';
     const decoder = new TextDecoder();
+    let thinkingSent = false;
 
-    // 逐 chunk 透传给前端
+    // 逐 chunk 透传给前端（带分片缓冲，避免 data 行跨 chunk 被截断）
     for await (const chunk of upstream.body) {
-      const text = decoder.decode(chunk, { stream: true });
-      // SSE 数据可能跨 chunk 拼接，按行分割
-      const lines = text.split('\n');
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith('data:')) continue;
-        const jsonStr = trimmed.slice(5).trim();
-        if (jsonStr === '[DONE]') continue;
-        if (!jsonStr) continue;
+      sseBuffer += decoder.decode(chunk, { stream: true });
+      const lines = sseBuffer.split('\n');
+      sseBuffer = lines.pop() ?? '';
+
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line.startsWith('data:')) continue;
+        const jsonStr = line.slice(5).trim();
+        if (jsonStr === '[DONE]' || !jsonStr) continue;
+
         try {
           const parsed = JSON.parse(jsonStr);
           const delta = parsed.choices?.[0]?.delta;
           // Qwen3.5-plus 先输出 reasoning_content（思考），再输出 content（回复）
-          // 只取 content 字段作为实际回复
           if (delta?.content) {
             fullReply += delta.content;
             res.write(`data: ${JSON.stringify({ type: 'delta', content: delta.content })}\n\n`);
           } else if (delta?.reasoning_content) {
-            // 思考阶段：发送心跳让前端知道还在处理
-            res.write(`data: ${JSON.stringify({ type: 'thinking' })}\n\n`);
-          }
-          // 检查 finish_reason
-          const finishReason = parsed.choices?.[0]?.finish_reason;
-          if (finishReason === 'stop') {
-            // 流结束
+            if (!thinkingSent) {
+              thinkingSent = true;
+              res.write(`data: ${JSON.stringify({ type: 'thinking' })}\n\n`);
+            }
           }
         } catch {
-          // JSON 解析失败跳过
+          // 非 JSON 行直接忽略
         }
       }
     }

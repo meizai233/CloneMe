@@ -6,7 +6,8 @@
   "main": "src/app.js",
   "scripts": {
     "start": "node src/app.js",
-    "dev": "node --watch src/app.js"
+    "dev": "node --watch src/app.js",
+    "test:llm-stream": "node scripts/test-llm-stream.js"
   },
   "dependencies": {
     "express": "^4.18.0",

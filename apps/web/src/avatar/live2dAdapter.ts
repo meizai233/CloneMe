@@ -285,7 +285,7 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
         }
 
         if (!tickerRegistered && Ticker) {
-          Live2DModel.registerTicker(Ticker);
+          Live2DModel.registerTicker(Ticker as unknown as never);
           tickerRegistered = true;
         }
 

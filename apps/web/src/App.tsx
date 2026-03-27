@@ -82,6 +82,8 @@ export default function App() {
   const lastActionRef = useRef<(() => Promise<void>) | null>(null);
   const ttsClientRef = useRef<TTSClient | null>(null);
   const sentenceBufferRef = useRef<SentenceBuffer | null>(null);
+  const typingQueueRef = useRef("");
+  const typingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const [mode, setMode] = useState<PersonaMode>("teacher");
   const [docsInput, setDocsInput] = useState(
@@ -117,6 +119,8 @@ export default function App() {
   } | null>(null);
   const [voiceCloneLoading, setVoiceCloneLoading] = useState(false);
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
+  const [chatPhase, setChatPhase] = useState<"idle" | "thinking" | "typing">("idle");
+  const [thinkingDots, setThinkingDots] = useState("");
 
   const loading = initLoading || chatLoading || voiceCloneLoading;
   const statusLabel = initLoading ? "初始化中" : chatLoading ? "思考中" : isSpeaking ? "播报中" : "待机";
@@ -152,6 +156,45 @@ export default function App() {
     adapterRef.current?.setSpeaking(false);
   }, []);
 
+  const stopTypewriter = useCallback(() => {
+    if (typingTimerRef.current) {
+      clearInterval(typingTimerRef.current);
+      typingTimerRef.current = null;
+    }
+    typingQueueRef.current = "";
+  }, []);
+
+  const pushTypewriterText = useCallback((chunkText: string) => {
+    if (!chunkText) return;
+    typingQueueRef.current += chunkText;
+    if (typingTimerRef.current) return;
+
+    typingTimerRef.current = setInterval(() => {
+      const queue = typingQueueRef.current;
+      if (!queue) {
+        if (typingTimerRef.current) {
+          clearInterval(typingTimerRef.current);
+          typingTimerRef.current = null;
+        }
+        return;
+      }
+      const segment = queue.slice(0, 2);
+      typingQueueRef.current = queue.slice(2);
+      setAnswer((prev) => prev + segment);
+    }, 22);
+  }, []);
+
+  useEffect(() => {
+    if (!(chatLoading && chatPhase === "thinking")) {
+      setThinkingDots("");
+      return;
+    }
+    const timer = setInterval(() => {
+      setThinkingDots((prev) => (prev.length >= 3 ? "" : `${prev}.`));
+    }, 380);
+    return () => clearInterval(timer);
+  }, [chatLoading, chatPhase]);
+
   useEffect(() => {
     const adapter = createLive2DAdapter({
       onStateChange(state) {
@@ -173,10 +216,11 @@ export default function App() {
     return () => {
       clearTimeout(initTimer);
       cleanupPlayback();
+      stopTypewriter();
       adapter.destroy();
       adapterRef.current = null;
     };
-  }, [cleanupPlayback]);
+  }, [cleanupPlayback, stopTypewriter]);
 
   // 初始化 TTS 客户端
   useEffect(() => {
@@ -378,8 +422,12 @@ export default function App() {
 
   const runAsk = useCallback(async () => {
     setChatLoading(true);
+    setChatPhase("thinking");
+    setAnswer("");
+    setReferences([]);
     setErrorMessage(null);
     cleanupPlayback();
+    stopTypewriter();
 
     const safeQuestion = question.trim();
     if (!safeQuestion) {
@@ -410,13 +458,15 @@ export default function App() {
         mode,
         voiceId: voiceId ?? undefined,
         onThinking: () => {
-          setAnswer("🤔 正在思考中...");
+          setChatPhase("thinking");
         },
-        onDelta: (partialReply) => {
-          setAnswer(partialReply);
+        onDelta: () => {
+          setChatPhase("typing");
         },
         onDeltaIncrement: (increment) => {
           // 增量文本送入句子缓冲器，凑满一句就发 TTS
+          setChatPhase("typing");
+          pushTypewriterText(increment);
           sentenceBuffer.push(increment);
         },
       });
@@ -424,6 +474,7 @@ export default function App() {
       // 刷新句子缓冲器中剩余的文本
       sentenceBuffer.flush();
       sentenceBufferRef.current = null;
+      stopTypewriter();
 
       setAnswer(data.reply);
       setReferences(data.references);
@@ -444,6 +495,7 @@ export default function App() {
         playFallbackLipSync(data.phonemeCues);
       }
     } catch (error) {
+      stopTypewriter();
       const message = error instanceof Error ? error.message : String(error);
       setErrorMessage(`${message}，已启用离线演示回答。`);
       setAnswer(buildOfflineReply(safeQuestion, mode));
@@ -454,9 +506,10 @@ export default function App() {
         adapterRef.current?.setEmotion("neutral");
       }, 1500);
     } finally {
+      setChatPhase("idle");
       setChatLoading(false);
     }
-  }, [mode, playAnswerAudio, playFallbackLipSync, question, voiceId]);
+  }, [cleanupPlayback, mode, playAnswerAudio, playFallbackLipSync, pushTypewriterText, question, stopTypewriter, voiceId]);
 
   async function onAsk(event: FormEvent) {
     event.preventDefault();
@@ -628,10 +681,14 @@ export default function App() {
         <div className="chat-dialog">
           <div className="chat-dialog-header">
             <span>💬 分身回复</span>
-            {chatLoading && <span className="chat-typing">输入中...</span>}
+            {chatLoading && (
+              <span className="chat-typing">
+                {chatPhase === "thinking" ? `思考中${thinkingDots}` : "输出中..."}
+              </span>
+            )}
           </div>
           <div className="chat-dialog-body">
-            <p>{answer}</p>
+            <p>{chatLoading && chatPhase === "thinking" && !answer ? `🤔 正在思考${thinkingDots}` : answer}</p>
           </div>
           {references.length > 0 && (
             <div className="chat-dialog-refs">

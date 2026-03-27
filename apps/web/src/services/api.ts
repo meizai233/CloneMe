@@ -163,17 +163,20 @@ export async function chatWithAvatar(payload: {
   const decoder = new TextDecoder();
   let fullReply = "";
   let result: ChatResponse | null = null;
+  let sseBuffer = "";
 
   while (true) {
     const { done, value } = await reader.read();
-    if (done) break;
+    sseBuffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+    const lines = sseBuffer.split("\n");
+    sseBuffer = lines.pop() ?? "";
 
-    const text = decoder.decode(value, { stream: true });
-    const lines = text.split("\n").filter((l) => l.startsWith("data: "));
-
-    for (const line of lines) {
-      const jsonStr = line.slice(6).trim();
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line.startsWith("data:")) continue;
+      const jsonStr = line.slice(5).trim();
       if (!jsonStr) continue;
+      if (jsonStr === "[DONE]") continue;
       try {
         const parsed = JSON.parse(jsonStr);
         if (parsed.type === "delta" && parsed.content) {
@@ -198,6 +201,8 @@ export async function chatWithAvatar(payload: {
         // JSON 解析失败跳过
       }
     }
+
+    if (done) break;
   }
 
   if (!result) {
