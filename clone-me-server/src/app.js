@@ -55,88 +55,124 @@ ttsWss.on('connection', (clientWs) => {
   let upstream = null;
   let taskId = null;
   let taskStarted = false;
+  let currentVoice = null;
+  let pendingTexts = []; // 连接建立前积压的文本
+  let finishTimer = null; // 延迟 finish 的定时器
+
+  /**
+   * 延迟发送 finish-task
+   * 每次收到新文本时重置定时器，确保所有文本发完后才 finish
+   * 这样多句话共用一个 task，避免每句话都重建连接
+   */
+  function scheduleFinish() {
+    if (finishTimer) clearTimeout(finishTimer);
+    finishTimer = setTimeout(() => {
+      if (upstream && upstream.readyState === 1 && taskStarted) {
+        finishTTSTask(upstream, taskId);
+        console.log('[TTS] Sent finish-task (debounced)');
+      }
+      finishTimer = null;
+    }, 800); // 800ms 内没有新文本就 finish
+  }
+
+  /**
+   * 确保上游连接就绪，返回后可直接发文本
+   */
+  function ensureUpstream(voice) {
+    if (upstream && upstream.readyState === 1 && taskStarted && currentVoice === voice) {
+      return; // 连接已就绪且 voice 相同，直接复用
+    }
+
+    // voice 变了或连接不可用，需要重建
+    if (upstream && upstream.readyState === 1) {
+      try {
+        if (taskStarted) finishTTSTask(upstream, taskId);
+        upstream.close();
+      } catch { /* 忽略 */ }
+    }
+
+    const conn = createTTSConnection();
+    upstream = conn.ws;
+    taskId = conn.taskId;
+    taskStarted = false;
+    currentVoice = voice;
+
+    upstream.on('open', () => {
+      console.log('[TTS] Connected to DashScope, starting task for voice:', voice);
+      startTTSTask(upstream, taskId, voice);
+    });
+
+    upstream.on('message', (upData) => {
+      if (!Buffer.isBuffer(upData)) return;
+      const str = upData.toString('utf8');
+
+      if (str.charAt(0) === '{') {
+        try {
+          const upMsg = JSON.parse(str);
+          const event = upMsg.header?.event;
+
+          if (event === 'task-started') {
+            taskStarted = true;
+            clientWs.send(JSON.stringify({ type: 'connected' }));
+            // 发送积压的文本
+            for (const t of pendingTexts) {
+              sendTTSText(upstream, taskId, t);
+            }
+            if (pendingTexts.length > 0) {
+              scheduleFinish();
+            }
+            pendingTexts = [];
+          } else if (event === 'task-finished') {
+            // task 结束，但不关闭连接，下次发文本时会重建 task
+            taskStarted = false;
+            console.log('[TTS] Task finished');
+          }
+        } catch {
+          // JSON 解析失败 = 音频数据
+          if (clientWs.readyState === 1) clientWs.send(upData);
+        }
+      } else {
+        // 二进制音频数据 → 转发给客户端
+        if (clientWs.readyState === 1) clientWs.send(upData);
+      }
+    });
+
+    upstream.on('error', (err) => {
+      console.error('[TTS] Upstream error:', err.message);
+      upstream = null;
+      taskStarted = false;
+    });
+
+    upstream.on('close', () => {
+      upstream = null;
+      taskStarted = false;
+    });
+  }
 
   clientWs.on('message', (data) => {
     try {
       const msg = JSON.parse(data.toString());
-      console.log('[TTS Proxy] Received from client:', JSON.stringify(msg).slice(0, 100));
 
       if (msg.text) {
         const voice = msg.voice || 'cherry';
+        ensureUpstream(voice);
 
-        if (!upstream || upstream.readyState !== 1) {
-          // 创建新连接
-          const conn = createTTSConnection();
-          upstream = conn.ws;
-          taskId = conn.taskId;
-          taskStarted = false;
-
-          upstream.on('open', () => {
-            console.log('[TTS] Connected to DashScope, starting task');
-            startTTSTask(upstream, taskId, voice);
-          });
-
-          upstream.on('message', (upData) => {
-            if (Buffer.isBuffer(upData)) {
-              const str = upData.toString('utf8');
-              // DashScope 返回两种消息：JSON 控制消息和二进制音频
-              // JSON 消息以 { 开头
-              if (str.charAt(0) === '{') {
-                try {
-                  const upMsg = JSON.parse(str);
-                  console.log('[TTS] Event:', upMsg.header?.event, upMsg.payload?.output?.type || '');
-                  if (upMsg.header?.event === 'task-started') {
-                    taskStarted = true;
-                    clientWs.send(JSON.stringify({ type: 'connected' }));
-                    sendTTSText(upstream, taskId, msg.text);
-                    // 发完文本后发送 finish 信号触发音频生成
-                    setTimeout(() => {
-                      if (upstream && upstream.readyState === 1) {
-                        finishTTSTask(upstream, taskId);
-                        console.log('[TTS] Sent finish-task after initial text');
-                      }
-                    }, 300);
-                  } else if (upMsg.header?.event === 'task-finished') {
-                    upstream.close();
-                    upstream = null;
-                    taskStarted = false;
-                  }
-                } catch {
-                  console.log('[TTS] JSON parse failed, forwarding as audio, size:', upData.length);
-                  if (clientWs.readyState === 1) clientWs.send(upData);
-                }
-              } else {
-                // 非 JSON = 二进制音频数据
-                console.log('[TTS] Audio chunk:', upData.length, 'bytes');
-                if (clientWs.readyState === 1) clientWs.send(upData);
-              }
-            }
-          });
-
-          upstream.on('error', (err) => {
-            console.error('[TTS] Upstream error:', err.message);
-            upstream = null;
-            taskStarted = false;
-          });
-
-          upstream.on('close', () => {
-            upstream = null;
-            taskStarted = false;
-          });
-        } else if (taskStarted) {
-          // 连接已建立，直接发送文本
+        if (taskStarted) {
+          // 连接已就绪，直接发文本
           sendTTSText(upstream, taskId, msg.text);
-          // 发完后 finish
-          setTimeout(() => {
-            if (upstream && upstream.readyState === 1) {
-              finishTTSTask(upstream, taskId);
-            }
-          }, 300);
+          scheduleFinish(); // 重置 finish 定时器
+        } else {
+          // 连接还在建立中，积压文本
+          pendingTexts.push(msg.text);
         }
       }
 
-      if (msg.action === 'finish' && upstream && taskStarted) {
-        finishTTSTask(upstream, taskId);
+      if (msg.action === 'finish') {
+        // 前端主动要求结束
+        if (finishTimer) clearTimeout(finishTimer);
+        if (upstream && upstream.readyState === 1 && taskStarted) {
+          finishTTSTask(upstream, taskId);
+        }
       }
     } catch {
       // 非 JSON 数据忽略
@@ -144,6 +180,7 @@ ttsWss.on('connection', (clientWs) => {
   });
 
   clientWs.on('close', () => {
+    if (finishTimer) clearTimeout(finishTimer);
     if (upstream && upstream.readyState === 1) {
       if (taskStarted) {
         try { finishTTSTask(upstream, taskId); } catch { /* 忽略 */ }
