@@ -136,7 +136,7 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
       try {
         const [{ Application }, { Live2DModel }] = await Promise.all([
           import("pixi.js"),
-          import("pixi-live2d-display")
+          import("pixi-live2d-display/cubism4")
         ]);
 
         try {
