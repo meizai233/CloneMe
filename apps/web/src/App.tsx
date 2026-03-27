@@ -9,6 +9,8 @@ import {
   chatWithAvatar,
   createVoiceClone,
   initAvatarProfile,
+  uploadAudio,
+  getUploadUrl,
   type PersonaMode
 } from "./services/api";
 
@@ -103,6 +105,12 @@ export default function App() {
   const [speakerName, setSpeakerName] = useState("我的音色");
   const [sampleAudioUrl, setSampleAudioUrl] = useState("");
   const [targetModel, setTargetModel] = useState("cosyvoice-v2");
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const [uploadedAudioUrl, setUploadedAudioUrl] = useState<string | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [voiceLatency, setVoiceLatency] = useState<{
     firstByteMs: number;
     totalMs: number;
@@ -308,6 +316,60 @@ export default function App() {
     await runInitAvatar();
   }
 
+  const startRecording = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        if (recordingTimerRef.current) {
+          clearInterval(recordingTimerRef.current);
+          recordingTimerRef.current = null;
+        }
+
+        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        // 转 base64 上传
+        const reader = new FileReader();
+        reader.onloadend = async () => {
+          const base64 = reader.result as string;
+          try {
+            const result = await uploadAudio(base64, `voice_${Date.now()}.webm`);
+            const fullUrl = getUploadUrl(result.audioUrl);
+            setUploadedAudioUrl(fullUrl);
+            setSampleAudioUrl(fullUrl);
+            setErrorMessage(null);
+          } catch (err) {
+            setErrorMessage(`上传录音失败: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        };
+        reader.readAsDataURL(blob);
+      };
+
+      mediaRecorderRef.current = mediaRecorder;
+      mediaRecorder.start();
+      setIsRecording(true);
+      setRecordingDuration(0);
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingDuration((d) => d + 1);
+      }, 1000);
+    } catch (err) {
+      setErrorMessage(`无法访问麦克风: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, []);
+
+  const stopRecording = useCallback(() => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+    }
+  }, []);
+
   const runCreateVoiceClone = useCallback(async () => {
     setVoiceCloneLoading(true);
     setErrorMessage(null);
@@ -459,7 +521,7 @@ export default function App() {
           </div>
 
           <div className="voice-clone-box">
-            <h3>语音克隆（第三方 TTS）</h3>
+            <h3>语音克隆</h3>
             <label className="block">
               <span>音色名称</span>
               <input
@@ -468,14 +530,33 @@ export default function App() {
                 placeholder="例如：我的播客音色"
               />
             </label>
-            <label className="block">
-              <span>语音样本 URL（公网可访问，建议 10~20 秒）</span>
+
+            <div className="recording-section">
+              <span>录制语音样本（建议 10~20 秒）</span>
+              <div className="recording-controls">
+                {!isRecording ? (
+                  <button onClick={startRecording} disabled={loading} type="button">
+                    🎙️ 开始录音
+                  </button>
+                ) : (
+                  <button onClick={stopRecording} type="button" className="recording-active">
+                    ⏹️ 停止录音 ({recordingDuration}s)
+                  </button>
+                )}
+                {uploadedAudioUrl && (
+                  <span className="upload-status">✅ 录音已上传</span>
+                )}
+              </div>
+              <p className="voice-hint">
+                或直接输入音频 URL：
+              </p>
               <input
                 value={sampleAudioUrl}
                 onChange={(e) => setSampleAudioUrl(e.target.value)}
                 placeholder="https://example.com/sample.wav"
               />
-            </label>
+            </div>
+
             <label className="block">
               <span>目标模型</span>
               <input

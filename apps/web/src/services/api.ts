@@ -178,3 +178,26 @@ export async function deleteVoiceClone(voiceId: string): Promise<VoiceCloneDelet
     "DELETE"
   );
 }
+
+export interface UploadAudioResponse {
+  audioUrl: string;
+  filename: string;
+  size: number;
+}
+
+/**
+ * 上传录音文件到后端，返回可访问的 URL
+ */
+export async function uploadAudio(audioData: string, filename?: string): Promise<UploadAudioResponse> {
+  return requestJson<UploadAudioResponse, { audioData: string; filename?: string }>(
+    "/api/upload/audio",
+    { audioData, filename }
+  );
+}
+
+/**
+ * 获取完整的上传文件 URL
+ */
+export function getUploadUrl(path: string): string {
+  return joinUrl(API_BASE_URL, path);
+}
