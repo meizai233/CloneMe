@@ -1,3 +1,5 @@
+@import "tailwindcss";
+
 :root {
   font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
   color: #e7ebff;
@@ -133,7 +135,10 @@ select {
   padding: 10px;
 }
 
-button {
+/* 对话页面内的按钮样式（不影响管理平台页面） */
+.panel button,
+.voice-clone-box button,
+.error-box button {
   margin-right: 8px;
   margin-bottom: 10px;
   border: 1px solid #5062b8;
@@ -144,12 +149,14 @@ button {
   cursor: pointer;
 }
 
-button.active {
+.panel button.active,
+.voice-clone-box button.active {
   border-color: #90a4ff;
   background: #4059d4;
 }
 
-button:disabled {
+.panel button:disabled,
+.voice-clone-box button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }
@@ -773,3 +780,5 @@ ul {
   border-color: #e53935;
   color: #fff;
 }
+
+/* 已迁移至 Tailwind：LoginPage、DashboardPage、AvatarEditPage */

@@ -1,14 +1,18 @@
 /**
  * 声音克隆路由
  * POST   /api/voice/create     - 创建克隆声音
- * GET    /api/voice/list        - 查询声音列表
+ * GET    /api/voice/list        - 查询声音列表（从数据库）
  * GET    /api/voice/:voiceId    - 查询声音状态
  * DELETE /api/voice/:voiceId    - 删除声音
  */
 import { Router } from 'express';
+import { v4 as uuid } from 'uuid';
+import db from '../db.js';
+import { authMiddleware } from '../middleware/auth.js';
 import { createClonedVoice, listClonedVoices, queryClonedVoice, deleteClonedVoice } from '../services/voice-clone.js';
 
 const router = Router();
+router.use(authMiddleware);
 
 /**
  * CosyVoice 错误码 → 友好提示
@@ -31,34 +35,38 @@ function friendlyVoiceError(rawError) {
   }
 }
 
-// 创建克隆声音
+// 创建克隆声音（克隆成功后存入数据库）
 router.post('/create', async (req, res) => {
   try {
-    const { audioUrl, prefix: rawPrefix, targetModel } = req.body;
+    const { audioUrl, prefix: rawPrefix, targetModel, speakerName } = req.body;
     if (!audioUrl) {
       return res.status(400).json({ error: 'audioUrl 不能为空' });
     }
-    // prefix 只允许英文字母和数字，最多 10 字符
     const prefix = (rawPrefix || 'cloneme').replace(/[^a-zA-Z0-9]/g, '').slice(0, 10) || 'cloneme';
     const result = await createClonedVoice(audioUrl, prefix, targetModel);
-    res.json(result);
+
+    // 存入数据库
+    const id = uuid();
+    db.prepare(
+      'INSERT INTO voices (id, voice_id, tenant_id, speaker_name, audio_url) VALUES (?, ?, ?, ?, ?)'
+    ).run(id, result.voiceId, req.tenantId, speakerName || prefix, audioUrl);
+
+    res.json({ voiceId: result.voiceId, id });
   } catch (err) {
     const friendly = friendlyVoiceError(err.message);
     res.status(400).json({ error: friendly });
   }
 });
 
-// 查询声音列表
-router.get('/list', async (req, res) => {
-  try {
-    const result = await listClonedVoices(req.query.prefix);
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+// 查询声音列表（从数据库读取，带名称和音频URL）
+router.get('/list', (req, res) => {
+  const voices = db.prepare(
+    'SELECT id, voice_id, speaker_name, audio_url, status, created_at FROM voices WHERE tenant_id = ? ORDER BY created_at DESC'
+  ).all(req.tenantId);
+  res.json({ voices });
 });
 
-// 查询单个声音状态
+// 查询单个声音状态（从远程API）
 router.get('/:voiceId', async (req, res) => {
   try {
     const result = await queryClonedVoice(req.params.voiceId);
@@ -68,11 +76,12 @@ router.get('/:voiceId', async (req, res) => {
   }
 });
 
-// 删除声音
+// 删除声音（同时删除远程和数据库记录）
 router.delete('/:voiceId', async (req, res) => {
   try {
-    const result = await deleteClonedVoice(req.params.voiceId);
-    res.json(result);
+    await deleteClonedVoice(req.params.voiceId);
+    db.prepare('DELETE FROM voices WHERE voice_id = ? AND tenant_id = ?').run(req.params.voiceId, req.tenantId);
+    res.json({ message: '删除成功' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
