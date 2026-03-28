@@ -5,6 +5,8 @@
 import express from 'express';
 import cors from 'cors';
 import { createServer } from 'http';
+import { createServer as createHttpsServer } from 'https';
+import { readFileSync, existsSync } from 'fs';
 import { WebSocketServer } from 'ws';
 import { PORT } from './config.js';
 import { createTTSConnection, startTTSTask, sendTTSText, finishTTSTask } from './services/tts.js';
@@ -54,8 +56,32 @@ app.post('/api/avatar/init', (req, res) => {
   });
 });
 
-// 创建 HTTP 服务器
-const server = createServer(app);
+// 根据证书文件是否存在，自动选择 HTTP 或 HTTPS
+// 开发环境: 项目根/deploy/certs/  部署环境: deploy/certs/
+// 从 app.js 所在目录向上查找 certs 目录
+const __appDir = new URL('.', import.meta.url).pathname;
+const certSearchPaths = [
+  '/root/certs',                      // 服务器固定路径（不会被部署覆盖）
+  `${__appDir}../../certs`,           // 部署环境: deploy/clone-me-server/src/ → deploy/certs/
+  `${__appDir}../../../deploy/certs`, // 开发环境: clone-me-server/src/ → 项目根/deploy/certs/
+];
+const certDir = certSearchPaths.find(p => existsSync(`${p}/server.crt`));
+const certPath = certDir ? `${certDir}/server.crt` : '';
+const keyPath = certDir ? `${certDir}/server.key` : '';
+const useHttps = certPath && keyPath && existsSync(certPath) && existsSync(keyPath);
+
+let server;
+if (useHttps) {
+  const sslOptions = {
+    cert: readFileSync(certPath),
+    key: readFileSync(keyPath),
+  };
+  server = createHttpsServer(sslOptions, app);
+  console.log('🔒 HTTPS 模式启用');
+} else {
+  server = createServer(app);
+  console.log('🔓 HTTP 模式（未检测到证书）');
+}
 
 // WebSocket 服务器 - TTS 代理（路径: /ws/tts）
 const ttsWss = new WebSocketServer({ noServer: true });
