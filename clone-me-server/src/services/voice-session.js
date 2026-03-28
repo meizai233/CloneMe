@@ -1,4 +1,4 @@
-import { createASRConnection } from './asr.js';
+import { createASRConnection, commitASR } from './asr.js';
 import { chat, chatStream } from './llm.js';
 import { getSystemPrompt, getDefaultPersonaKey } from './persona.js';
 import { getHistory, appendRound, searchRelevantMemories } from './memory.js';
@@ -138,6 +138,12 @@ async function planAvatarBehavior({ userQuestion, reply, personaKey, avatarModel
 }
 
 function isAsrFinal(payload) {
+  // 火山豆包的 definite 只表示某个 utterance 已确认，不代表用户说完
+  // 用户说完的判断完全交给静默检测，这里不做 final 判断
+  if (payload?._volcParsed) {
+    return false;
+  }
+  // 通用格式兼容（非火山豆包的 ASR 服务）
   return Boolean(
     payload?.isFinal ||
       payload?.final ||
@@ -145,6 +151,7 @@ function isAsrFinal(payload) {
       payload?.sentence_end ||
       payload?.type === 'final' ||
       payload?.type === 'asr_final' ||
+      payload?.type === 'conversation.item.input_audio_transcription.completed' ||
       payload?.event === 'final' ||
       payload?.result?.is_final ||
       payload?.result?.final
@@ -153,6 +160,11 @@ function isAsrFinal(payload) {
 
 function extractAsrText(payload) {
   if (!payload || typeof payload !== 'object') return '';
+  // 火山豆包格式：从 payloadMsg 中解析
+  if (payload?._volcParsed) {
+    return payload._volcParsed?.result?.text?.trim() || '';
+  }
+  // 通用格式兼容
   const candidates = [
     payload.text,
     payload.transcript,
@@ -168,17 +180,42 @@ function extractAsrText(payload) {
   return '';
 }
 
-function createSentenceEmitter(onSentence, minLength = 6, maxLength = 40, hardMaxLength = 60) {
+/**
+ * 解析火山豆包 ASR 响应，将 payloadMsg JSON 字符串解析出来
+ */
+function parseVolcAsrResponse(raw) {
+  if (!raw || typeof raw !== 'object') return raw;
+  if (typeof raw.payloadMsg === 'string') {
+    try {
+      const parsed = JSON.parse(raw.payloadMsg);
+      return { ...raw, _volcParsed: parsed };
+    } catch {
+      return raw;
+    }
+  }
+  return raw;
+}
+
+function createSentenceEmitter(onSentence, minLength = 12, maxLength = 60, hardMaxLength = 80) {
   let buffer = '';
   return {
     push(text) {
       buffer += text;
       while (buffer.length > 0) {
         let cutIdx = -1;
-        const strongMatch = buffer.match(/[。！？\n.!?]/);
-        if (strongMatch && strongMatch.index !== undefined) {
-          cutIdx = strongMatch.index + 1;
+
+        // 优先在强标点处断句（句号、问号、感叹号、换行）
+        // 但要求至少积累 minLength 个字符，避免切得太碎
+        const strongRegex = /[。！？\n.!?]/g;
+        let strongMatch;
+        while ((strongMatch = strongRegex.exec(buffer)) !== null) {
+          if (strongMatch.index + 1 >= minLength) {
+            cutIdx = strongMatch.index + 1;
+            break;
+          }
         }
+
+        // 超过 maxLength 仍没有强标点，才在弱标点处断句
         if (cutIdx === -1 && buffer.length >= maxLength) {
           const searchFrom = buffer.slice(minLength);
           const weakMatch = searchFrom.match(/[，,；;、：:）)]/);
@@ -186,6 +223,8 @@ function createSentenceEmitter(onSentence, minLength = 6, maxLength = 40, hardMa
             cutIdx = minLength + weakMatch.index + 1;
           }
         }
+
+        // 超过 hardMaxLength 强制断句
         if (cutIdx === -1 && buffer.length >= hardMaxLength) {
           const nearCut = buffer.slice(0, hardMaxLength);
           const lastWeak = Math.max(
@@ -199,10 +238,12 @@ function createSentenceEmitter(onSentence, minLength = 6, maxLength = 40, hardMa
           );
           cutIdx = lastWeak > minLength ? lastWeak + 1 : maxLength;
         }
+
         if (cutIdx === -1) break;
         const sentence = buffer.slice(0, cutIdx).trim();
         buffer = buffer.slice(cutIdx);
         if (sentence.length < minLength) {
+          // 太短的片段放回 buffer，等后续文本拼接
           buffer = sentence + buffer;
           break;
         }
@@ -238,195 +279,6 @@ function parseSSEChunk(sseBuffer, chunkText, onEvent) {
   return buffer;
 }
 
-function estimateSentenceDurationMs(sentence) {
-  const content = (sentence || '').trim();
-  if (!content) return 220;
-  const noSpaceLength = content.replace(/\s+/g, '').length;
-  const punctuationCount = (content.match(/[，。！？、,.!?;；:：]/g) || []).length;
-  const base = noSpaceLength * 130 + punctuationCount * 80;
-  return Math.max(260, Math.min(4200, base));
-}
-
-function buildWordTimelineFromSentence(sentence, offsetMs = 0) {
-  const cleaned = (sentence || '')
-    .replace(/[，。！？、,.!?;；:："'`“”‘’()[\]{}<>]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  const words = cleaned ? cleaned.split(' ') : [];
-  if (words.length === 0) {
-    return {
-      source: 'word',
-      words: [],
-      wtimes: [],
-      wdurations: [],
-      durationMs: 0,
-    };
-  }
-  const estimatedDuration = estimateSentenceDurationMs(sentence);
-  const totalWeight = words.reduce((sum, word) => sum + Math.max(1, word.length), 0);
-  const minWordMs = 85;
-  let cursor = 0;
-  const wtimes = [];
-  const wdurations = [];
-  words.forEach((word, index) => {
-    const weight = Math.max(1, word.length);
-    const remaining = Math.max(0, estimatedDuration - cursor);
-    const proportional =
-      index === words.length - 1 ? remaining : (estimatedDuration * weight) / Math.max(1, totalWeight);
-    const duration = Math.max(minWordMs, Math.min(remaining || minWordMs, proportional));
-    wtimes.push(Math.round(offsetMs + cursor));
-    wdurations.push(Math.round(duration));
-    cursor += duration;
-  });
-  return {
-    source: 'word',
-    words,
-    wtimes,
-    wdurations,
-    durationMs: Math.round(cursor),
-  };
-}
-
-function asNumberArray(value) {
-  if (!Array.isArray(value)) return [];
-  return value.map((item) => Number(item)).filter((item) => Number.isFinite(item));
-}
-
-function asStringArray(value) {
-  if (!Array.isArray(value)) return [];
-  return value.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim());
-}
-
-function firstNonEmpty(...values) {
-  for (const value of values) {
-    if (Array.isArray(value) && value.length > 0) return value;
-  }
-  return [];
-}
-
-function extractProviderLipSyncTimeline(message) {
-  const visemesRaw = firstNonEmpty(
-    message?.visemes,
-    message?.result?.visemes,
-    message?.payload?.result?.visemes,
-    message?.payload?.output?.visemes,
-    message?.output?.visemes
-  );
-  const visemes = asStringArray(visemesRaw);
-  if (visemes.length > 0) {
-    const vtimes = asNumberArray(
-      firstNonEmpty(
-        message?.vtimes,
-        message?.timestamps,
-        message?.result?.vtimes,
-        message?.result?.timestamps,
-        message?.payload?.result?.vtimes,
-        message?.payload?.result?.timestamps,
-        message?.payload?.output?.vtimes,
-        message?.payload?.output?.timestamps,
-        message?.output?.vtimes,
-        message?.output?.timestamps
-      )
-    );
-    const vdurationsRaw = asNumberArray(
-      firstNonEmpty(
-        message?.vdurations,
-        message?.durations,
-        message?.result?.vdurations,
-        message?.result?.durations,
-        message?.payload?.result?.vdurations,
-        message?.payload?.result?.durations,
-        message?.payload?.output?.vdurations,
-        message?.payload?.output?.durations,
-        message?.output?.vdurations,
-        message?.output?.durations
-      )
-    );
-    const alignedTimes = vtimes.length === visemes.length ? vtimes : visemes.map((_, index) => index * 80);
-    const alignedDurations =
-      vdurationsRaw.length === visemes.length ? vdurationsRaw : visemes.map(() => 80);
-    return {
-      source: 'viseme',
-      visemes,
-      vtimes: alignedTimes,
-      vdurations: alignedDurations,
-    };
-  }
-
-  const words = asStringArray(
-    firstNonEmpty(
-      message?.words,
-      message?.result?.words,
-      message?.payload?.result?.words,
-      message?.payload?.output?.words,
-      message?.output?.words
-    )
-  );
-  if (words.length > 0) {
-    const wtimes = asNumberArray(
-      firstNonEmpty(
-        message?.wtimes,
-        message?.result?.wtimes,
-        message?.payload?.result?.wtimes,
-        message?.payload?.output?.wtimes,
-        message?.output?.wtimes
-      )
-    );
-    const wdurations = asNumberArray(
-      firstNonEmpty(
-        message?.wdurations,
-        message?.result?.wdurations,
-        message?.payload?.result?.wdurations,
-        message?.payload?.output?.wdurations,
-        message?.output?.wdurations
-      )
-    );
-    if (wtimes.length === words.length && wdurations.length === words.length) {
-      return {
-        source: 'word',
-        words,
-        wtimes,
-        wdurations,
-      };
-    }
-  }
-  return null;
-}
-
-function debugTTSPayload(message, providerTimeline) {
-  if (!TTS_DEBUG || !message || typeof message !== 'object') return;
-  const payload = message;
-  const headerEvent = payload?.header?.event;
-  const timelineSummary = providerTimeline
-    ? providerTimeline.source === 'viseme'
-      ? {
-          source: 'viseme',
-          visemeCount: providerTimeline.visemes?.length ?? 0,
-          hasVtimes: Array.isArray(providerTimeline.vtimes),
-          hasVdurations: Array.isArray(providerTimeline.vdurations),
-        }
-      : {
-          source: 'word',
-          wordCount: providerTimeline.words?.length ?? 0,
-          hasWtimes: Array.isArray(providerTimeline.wtimes),
-          hasWdurations: Array.isArray(providerTimeline.wdurations),
-        }
-    : null;
-  const directFields = {
-    hasPhonemes: Array.isArray(payload?.phonemes),
-    hasVisemes: Array.isArray(payload?.visemes),
-    hasWords: Array.isArray(payload?.words),
-    hasVtimes: Array.isArray(payload?.vtimes) || Array.isArray(payload?.timestamps),
-    hasWtimes: Array.isArray(payload?.wtimes),
-  };
-  console.log('[TTS_DEBUG] upstream json', {
-    headerEvent: headerEvent || null,
-    keys: Object.keys(payload).slice(0, 20),
-    directFields,
-    timelineSummary,
-  });
-}
-
 export function attachVoiceSession(clientWs) {
   const state = {
     sessionId: `voice_${Date.now()}`,
@@ -444,7 +296,23 @@ export function attachVoiceSession(clientWs) {
     lastCommittedAt: 0,
   };
 
-  const asrUpstream = createASRConnection();
+  const { ws: asrUpstream, ready: asrReady } = createASRConnection();
+  console.log('[voice-session] ASR 上游连接创建中...');
+
+  // 等待 ASR 配置完成
+  asrReady.then(() => {
+    console.log('[voice-session] ASR 上游已就绪');
+  }).catch((err) => {
+    console.error('[voice-session] ASR 上游就绪失败:', err.message);
+  });
+
+  asrUpstream.on('error', (err) => {
+    console.error('[voice-session] ASR 上游连接错误:', err.message);
+  });
+
+  asrUpstream.on('close', (code, reason) => {
+    console.log(`[voice-session] ASR 上游连接关闭: code=${code} reason=${reason}`);
+  });
   let ttsUpstream = null;
   let ttsTaskId = null;
   let ttsTaskStarted = false;
@@ -500,6 +368,7 @@ export function attachVoiceSession(clientWs) {
     ttsUpstream.on('message', (upData) => {
       if (!Buffer.isBuffer(upData)) return;
       const firstByte = upData[0];
+      console.log(`[voice-session] TTS 上游收到数据: ${upData.length} bytes, firstByte=${firstByte}, clientWs.readyState=${clientWs.readyState}`);
       if (firstByte === 123) {
         try {
           const msg = JSON.parse(upData.toString('utf8'));
@@ -691,6 +560,7 @@ export function attachVoiceSession(clientWs) {
         if (myToken !== sseTurnToken) return;
         if (!sentence) return;
         pushTTSLipSyncSentence(sentence, currentTurnId);
+        console.log(`[voice-session] TTS 发送句子: "${sentence}" ttsTaskStarted=${ttsTaskStarted} ttsUpstream=${ttsUpstream ? 'exists' : 'null'} readyState=${ttsUpstream?.readyState}`);
         if (!ttsTaskStarted) {
           pendingSentences.push(sentence);
           return;
@@ -699,7 +569,8 @@ export function attachVoiceSession(clientWs) {
       });
 
       await ensureTTSReady(state.voiceId);
-      if (myToken !== sseTurnToken) return;
+      console.log(`[voice-session] TTS 就绪，开始调用 LLM，问题: "${userQuestion}"`);
+      if (myToken !== sseTurnToken) { console.log('[voice-session] turn 已被打断，跳过 LLM'); return; }
 
       for await (const chunk of upstream.body) {
         if (myToken !== sseTurnToken) return;
@@ -718,7 +589,15 @@ export function attachVoiceSession(clientWs) {
 
       sentenceEmitter.flush();
       if (ttsUpstream && ttsTaskStarted) {
+        await new Promise(r => setTimeout(r, 200));
+        console.log(`[voice-session] 发送 finish-task 触发 TTS 合成`);
         finishTTSTask(ttsUpstream, ttsTaskId);
+        // 等待 ttsTaskStarted 变为 false（bindTTSUpstream 的 message 监听器会在 task-finished 时设置）
+        const waitStart = Date.now();
+        while (ttsTaskStarted && Date.now() - waitStart < 15000) {
+          await new Promise(r => setTimeout(r, 100));
+        }
+        console.log(`[voice-session] TTS 合成${ttsTaskStarted ? '超时' : '完成'}，耗时 ${Date.now() - waitStart}ms`);
       }
 
       appendRound(state.sessionId, userQuestion, fullReply, state.userId);
@@ -749,14 +628,50 @@ export function attachVoiceSession(clientWs) {
       });
       state.activeTurnId = 0;
     } catch (error) {
+      console.error('[voice-session] streamAssistantReply 异常:', error.message, error.stack?.slice(0, 300));
       if (myToken !== sseTurnToken) return;
       sendJson({ type: 'error', stage: 'llm', message: error.message || '语音会话处理失败' });
       state.activeTurnId = 0;
     }
   }
 
+  // 静默检测：1.5 秒没有新识别结果，自动发 COMMIT 触发 final
+  let silenceTimer = null;
+  let lastAsrText = '';
+  let asrPaused = false; // LLM 回复期间暂停处理 ASR 结果
+
+  function resetSilenceTimer() {
+    if (silenceTimer) clearTimeout(silenceTimer);
+    if (asrPaused) return; // 暂停期间不启动静默检测
+    silenceTimer = setTimeout(() => {
+      if (lastAsrText && !asrPaused) {
+        console.log(`[voice-session] 静默检测触发，直接使用当前文本: "${lastAsrText}"`);
+        asrPaused = true; // 暂停 ASR 处理，防止后续识别结果干扰
+        commitASR(asrUpstream);
+        const finalText = lastAsrText;
+        lastAsrText = '';
+        sendJson({ type: 'asr.final', text: finalText });
+        if (state.activeTurnId > 0) {
+          interruptCurrentTurn();
+        }
+        void streamAssistantReply(finalText).finally(() => {
+          // LLM + TTS 完成后恢复 ASR 处理
+          asrPaused = false;
+          console.log('[voice-session] LLM 回复完成，恢复 ASR 监听');
+        });
+      }
+    }, 1500);
+  }
+
   asrUpstream.on('open', () => {
+    // open 事件由 asr.js 内部处理（发送 CONFIG_PARAM），这里不需要再发 connected
+  });
+
+  // ASR 配置完成后通知前端
+  asrReady.then(() => {
     sendJson({ type: 'connected', sessionId: state.sessionId, persona: state.persona });
+  }).catch(() => {
+    sendJson({ type: 'error', stage: 'asr', message: 'ASR 配置失败' });
   });
 
   asrUpstream.on('message', (data) => {
@@ -768,8 +683,30 @@ export function attachVoiceSession(clientWs) {
       return;
     }
 
+    // 跳过 CONFIGURED 响应（已在 asr.js 中处理）
+    if (payload?.type === 'CONFIGURED') return;
+
+    // 解析火山豆包格式
+    payload = parseVolcAsrResponse(payload);
+
     const text = extractAsrText(payload);
     if (!text) return;
+
+    // LLM 回复期间忽略 ASR 结果
+    if (asrPaused) return;
+
+    // 调试：打印火山豆包 utterances 的 definite 状态
+    if (payload?._volcParsed?.result?.utterances) {
+      const utterances = payload._volcParsed.result.utterances;
+      const definiteSummary = utterances.map(u => `"${u.text}":definite=${u.definite}`).join(', ');
+      console.log(`[voice-session] ASR utterances: ${definiteSummary}`);
+    }
+
+    console.log(`[voice-session] ASR 识别: "${text}" final=${isAsrFinal(payload)}`);
+
+    // 更新最后识别文本，重置静默计时器
+    lastAsrText = text;
+    resetSilenceTimer();
 
     if (isAsrFinal(payload)) {
       commitRecognizedText(text, 'asr.final');
@@ -793,9 +730,12 @@ export function attachVoiceSession(clientWs) {
 
   clientWs.on('message', (data) => {
     if (Buffer.isBuffer(data)) {
-      if (asrUpstream.readyState === 1) {
-        asrUpstream.send(data);
-      }
+      // 确保 ASR 已配置完成再转发音频
+      asrReady.then(() => {
+        if (asrUpstream.readyState === 1) {
+          asrUpstream.send(data);
+        }
+      }).catch(() => {});
       return;
     }
 

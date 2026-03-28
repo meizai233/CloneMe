@@ -5,7 +5,7 @@ import tailwindcss from "@tailwindcss/vite";
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   optimizeDeps: {
-    include: ["pixi.js", "pixi-live2d-display/cubism4"],
+    include: ["pixi.js", "pixi-live2d-display/cubism4", "pinyin"],
     // TalkingHead dynamically imports lipsync-*.mjs at runtime.
     // Exclude it from optimize pre-bundling to avoid missing deps warnings.
     exclude: ["@met4citizen/talkinghead", "pinyin2ipa", "pinyin-separate"]

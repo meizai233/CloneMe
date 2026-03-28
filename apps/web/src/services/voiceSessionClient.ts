@@ -145,28 +145,46 @@ export class VoiceSessionClient {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error("Voice session 未连接");
     }
-    if (this.mediaRecorder && this.mediaRecorder.state === "recording") {
+    if (this.mediaRecorder) {
       return;
     }
 
-    this.micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const mediaRecorder = new MediaRecorder(this.micStream, { mimeType: "audio/webm" });
-    this.mediaRecorder = mediaRecorder;
+    // 使用 AudioContext + ScriptProcessor 采集 PCM 16kHz 16bit 单声道
+    this.micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true },
+    });
 
-    mediaRecorder.ondataavailable = async (event) => {
-      if (event.data.size <= 0) return;
-      const payload = await event.data.arrayBuffer();
-      if (this.ws?.readyState === WebSocket.OPEN) {
-        this.ws.send(payload);
+    const audioCtx = new AudioContext({ sampleRate: 16000 });
+    const source = audioCtx.createMediaStreamSource(this.micStream);
+    // 使用 ScriptProcessorNode 采集原始 PCM（bufferSize=4096, 单声道输入, 单声道输出）
+    const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+
+    processor.onaudioprocess = (e) => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+      const float32 = e.inputBuffer.getChannelData(0);
+      // 将 Float32 转为 Int16 PCM
+      const int16 = new Int16Array(float32.length);
+      for (let i = 0; i < float32.length; i++) {
+        const s = Math.max(-1, Math.min(1, float32[i]));
+        int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
       }
+      this.ws.send(int16.buffer);
     };
 
-    mediaRecorder.start(250);
+    source.connect(processor);
+    processor.connect(audioCtx.destination);
+
+    // 存储引用以便 stopRecording 时清理
+    this.mediaRecorder = { stop: () => {
+      processor.disconnect();
+      source.disconnect();
+      audioCtx.close();
+    } } as any;
   }
 
   stopRecording() {
-    if (this.mediaRecorder && this.mediaRecorder.state === "recording") {
-      this.mediaRecorder.stop();
+    if (this.mediaRecorder) {
+      try { (this.mediaRecorder as any).stop(); } catch { /* 忽略 */ }
     }
     if (this.micStream) {
       this.micStream.getTracks().forEach((track) => track.stop());
@@ -234,6 +252,11 @@ export class VoiceSessionClient {
         sessionId: typeof msg.sessionId === "string" ? msg.sessionId : "",
         persona: typeof msg.persona === "string" ? msg.persona : "",
       });
+    }
+    if (type === "turn.interrupted" || type === "turn.started") {
+      // 新一轮对话开始或被打断，立即停止当前音频播放
+      this.stopPlayback();
+      this.audioQueue = [];
     }
   }
 

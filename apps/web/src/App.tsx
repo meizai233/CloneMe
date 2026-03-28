@@ -394,6 +394,8 @@ function SearchableDropdown(props: {
                 onClick={() => {
                   onSelect(item.value);
                   setOpen(false);
+                  // 选择后让 input 失焦，避免 onFocus 重新打开下拉框
+                  (rootRef.current?.querySelector('input') as HTMLInputElement)?.blur();
                 }}
               >
                 {item.label}
@@ -1937,7 +1939,9 @@ export default function App() {
                   type="button"
                   className="stop-audio-btn"
                   onClick={() => {
+                    // 同时停止两条播放链路：普通 TTS 和实时语音会话
                     ttsClientRef.current?.stop();
+                    voiceSessionRef.current?.interrupt();
                     adapterRef.current?.setSpeaking(false);
                     setIsSpeaking(false);
                   }}

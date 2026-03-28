@@ -229,10 +229,13 @@ ttsWss.on('connection', (clientWs) => {
 // WebSocket 服务器 - ASR 代理（路径: /ws/asr）
 const asrWss = new WebSocketServer({ noServer: true });
 asrWss.on('connection', (clientWs) => {
-  const upstream = createASRConnection();
+  const { ws: upstream, ready } = createASRConnection();
 
-  upstream.on('open', () => {
+  ready.then(() => {
     clientWs.send(JSON.stringify({ type: 'connected' }));
+  }).catch((err) => {
+    clientWs.send(JSON.stringify({ type: 'error', message: err.message }));
+    clientWs.close();
   });
 
   // 上游识别结果 → 客户端
@@ -242,11 +245,13 @@ asrWss.on('connection', (clientWs) => {
     }
   });
 
-  // 客户端音频数据 → 上游 ASR
+  // 客户端音频数据 → 上游 ASR（等配置完成后再转发）
   clientWs.on('message', (data) => {
-    if (upstream.readyState === 1) {
-      upstream.send(data);
-    }
+    ready.then(() => {
+      if (upstream.readyState === 1) {
+        upstream.send(data);
+      }
+    }).catch(() => {});
   });
 
   clientWs.on('close', () => upstream.close());
