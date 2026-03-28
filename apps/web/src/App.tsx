@@ -97,7 +97,18 @@ const GESTURE_LABELS: Record<AvatarGesture, string> = {
   discountHighlight: "优惠强调",
   comfortExplain: "安抚解释",
 };
+const EMOTION_NATURAL_GESTURE_POOL: Record<AvatarEmotion, AvatarGesture[]> = {
+  neutral: ["nod", "emphasis", "nod"],
+  happy: ["openArms", "nod", "emphasis"],
+  thinking: ["thinking", "nod", "thinking"],
+  excited: ["promoPitch", "openArms", "clap", "emphasis"],
+  confident: ["promoPitch", "emphasis", "nod"],
+  warm: ["comfortExplain", "openArms", "nod"],
+  serious: ["emphasis", "thinking", "nod"],
+  surprised: ["openArms", "emphasis", "clap"],
+};
 type AvatarEngine = "live2d" | "talkinghead";
+const LIPSYNC_DEBUG = String(import.meta.env.VITE_LIPSYNC_DEBUG ?? "1") !== "0";
 const PINYIN_TWO_LETTER_INITIALS = ["zh", "ch", "sh"];
 const IPA_TO_PSEUDO_VISEME_RULES: Array<{ re: RegExp; viseme: string }> = [
   { re: /t͡ɕʰ|t͡ɕ|ʂ|ɕ|ʐ/g, viseme: "CH" },
@@ -144,31 +155,62 @@ function ipaToPseudoVisemes(ipaRaw: string): string[] {
   return Array.from(new Set(visemes));
 }
 
-function textToPseudoVisemes(text: string): string[] {
+function buildPseudoVisemeTrace(text: string): {
+  visemes: string[];
+  steps: Array<{ token: string; ipa: string; source: "ipa" | "pinyin-fallback" | "non-alpha"; visemes: string[] }>;
+} {
   const trimmed = text.trim();
-  if (!trimmed) return [];
+  if (!trimmed) {
+    return { visemes: [], steps: [] };
+  }
   const rows = pinyin(trimmed, { style: pinyin.STYLE_NORMAL, heteronym: false, segment: true });
   const converter = (globalThis as unknown as { pinyin2ipa?: (value: string) => string | string[] }).pinyin2ipa;
-  const visemes: string[] = [];
+  const steps: Array<{ token: string; ipa: string; source: "ipa" | "pinyin-fallback" | "non-alpha"; visemes: string[] }> = [];
+  const allVisemes: string[] = [];
+
   rows.forEach((row) => {
     const syllable = row?.[0]?.trim();
     if (!syllable) return;
+
     if (!/^[a-zA-Z]+$/.test(syllable)) {
-      visemes.push("SIL");
+      steps.push({ token: syllable, ipa: "-", source: "non-alpha", visemes: ["SIL"] });
+      allVisemes.push("SIL");
       return;
     }
+
     const ipaResult = converter?.(syllable);
-    const ipaText = Array.isArray(ipaResult) ? ipaResult.join(" ") : ipaResult;
-    const ipaVisemes = ipaToPseudoVisemes(ipaText ?? "");
+    const ipaText = Array.isArray(ipaResult) ? ipaResult.join(" ") : ipaResult ?? "";
+    const ipaVisemes = ipaToPseudoVisemes(ipaText);
     if (ipaVisemes.length > 0) {
-      visemes.push(...ipaVisemes);
+      steps.push({ token: syllable, ipa: ipaText || "-", source: "ipa", visemes: ipaVisemes });
+      allVisemes.push(...ipaVisemes);
       return;
     }
+
     const { initial, final } = splitPinyinSyllable(syllable);
-    if (initial) visemes.push(initial);
-    if (final) visemes.push(final);
+    const fallbackVisemes = [initial, final].filter(Boolean);
+    if (fallbackVisemes.length > 0) {
+      steps.push({ token: syllable, ipa: ipaText || "-", source: "pinyin-fallback", visemes: fallbackVisemes });
+      allVisemes.push(...fallbackVisemes);
+    }
   });
-  return visemes;
+
+  return { visemes: allVisemes, steps };
+}
+
+function pickNaturalGestureByEmotion(
+  emotion: AvatarEmotion,
+  allowedGestures: AvatarGesture[],
+  avoidGesture: AvatarGesture = "none"
+): AvatarGesture {
+  const candidates = (EMOTION_NATURAL_GESTURE_POOL[emotion] ?? ["nod"])
+    .filter((gesture) => allowedGestures.includes(gesture));
+  const pool = candidates.length > 0 ? candidates : allowedGestures.filter((gesture) => gesture !== "none");
+  const deduped = Array.from(new Set(pool.filter((gesture) => gesture !== avoidGesture && gesture !== "none")));
+  const finalPool = deduped.length > 0 ? deduped : pool.filter((gesture) => gesture !== "none");
+  if (finalPool.length === 0) return "none";
+  const idx = Math.floor(Math.random() * finalPool.length);
+  return finalPool[idx] ?? "none";
 }
 
 const QUESTION_GUIDE_SEED: string[] = [
@@ -489,6 +531,7 @@ export default function App() {
   const lastGestureRef = useRef<AvatarGesture>("none");
   const lastGestureAtRef = useRef(0);
   const gestureResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const speakingGestureTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const introPlayedOnEntryRef = useRef(false);
   const autoVoicePersonaRef = useRef<string | null>(null);
 
@@ -552,6 +595,8 @@ export default function App() {
   const [realtimePartialText, setRealtimePartialText] = useState("");
   const [realtimeFinalText, setRealtimeFinalText] = useState("");
   const [realtimeLoading, setRealtimeLoading] = useState(false);
+  const runtimeRef = useRef<AvatarRuntime>("mock");
+  const pseudoVisemeActiveRef = useRef(false);
   const [questionHistory, setQuestionHistory] = useState<string[]>([]);
   const [questionSuggestions, setQuestionSuggestions] = useState<string[]>(() => QUESTION_GUIDE_SEED.slice(0, 5));
   const [questionSuggestLoading, setQuestionSuggestLoading] = useState(false);
@@ -574,12 +619,32 @@ export default function App() {
   });
 
   const loading = chatLoading || voiceCloneLoading || realtimeLoading;
+  useEffect(() => {
+    runtimeRef.current = runtime;
+  }, [runtime]);
 
   const runTalkingHeadPseudoViseme = useCallback((text: string): boolean => {
     if (runtime !== "talkinghead") return false;
-    const visemes = textToPseudoVisemes(text);
+    const trace = buildPseudoVisemeTrace(text);
+    const visemes = trace.visemes;
     if (visemes.length === 0) return false;
-    const stepMs = Math.max(90, Math.min(210, Math.round(1800 / Math.max(6, visemes.length))));
+    const stepMs = Math.max(35, Math.min(85, Math.round(720 / Math.max(8, visemes.length))));
+    if (LIPSYNC_DEBUG) {
+      console.groupCollapsed("[LipSync][3D] pinyin2ipa -> viseme");
+      console.info("[LipSync][3D] input text:", text);
+      console.table(trace.steps);
+      console.info("[LipSync][3D] final visemes:", visemes.join(" "));
+      console.info("[LipSync][3D] stepMs:", stepMs, "count:", visemes.length);
+      console.groupEnd();
+    }
+    pseudoVisemeActiveRef.current = true;
+    const guardDurationMs = Math.max(900, visemes.length * stepMs + 220);
+    setTimeout(() => {
+      pseudoVisemeActiveRef.current = false;
+      if (LIPSYNC_DEBUG) {
+        console.info("[LipSync][3D] release pseudo-viseme guard");
+      }
+    }, guardDurationMs);
     adapterRef.current?.runChinesePseudoVisemeSequence?.(visemes, stepMs);
     return true;
   }, [runtime]);
@@ -721,6 +786,12 @@ export default function App() {
   const clearIntroTimers = useCallback(() => {
     introTimeoutsRef.current.forEach((timer) => clearTimeout(timer));
     introTimeoutsRef.current = [];
+  }, []);
+  const clearSpeakingGestureTimer = useCallback(() => {
+    if (speakingGestureTimerRef.current) {
+      clearTimeout(speakingGestureTimerRef.current);
+      speakingGestureTimerRef.current = null;
+    }
   }, []);
 
   const waitWithIntroTimer = useCallback(
@@ -1040,6 +1111,7 @@ export default function App() {
       stopModeIntro();
       cleanupPlayback();
       stopTypewriter();
+      clearSpeakingGestureTimer();
       if (gestureResetTimerRef.current) {
         clearTimeout(gestureResetTimerRef.current);
         gestureResetTimerRef.current = null;
@@ -1047,7 +1119,43 @@ export default function App() {
       adapter.destroy();
       adapterRef.current = null;
     };
-  }, [avatarEngine, cleanupPlayback, stopModeIntro, stopTypewriter]);
+  }, [avatarEngine, cleanupPlayback, clearSpeakingGestureTimer, stopModeIntro, stopTypewriter]);
+
+  useEffect(() => {
+    clearSpeakingGestureTimer();
+    if (!isSpeaking || runtime !== "talkinghead") {
+      return;
+    }
+    const modelCapability = resolveAvatarModelCapability(resolveCurrentAvatarModelUrl(selectedPersona));
+    const tick = () => {
+      const nextGesture = pickNaturalGestureByEmotion(
+        emotion,
+        modelCapability.allowedGestures,
+        lastGestureRef.current
+      );
+      if (nextGesture !== "none") {
+        adapterRef.current?.playGesture(nextGesture);
+        markGesture(nextGesture);
+        lastGestureRef.current = nextGesture;
+        lastGestureAtRef.current = Date.now();
+      }
+      const nextDelay = 1700 + Math.floor(Math.random() * 1400);
+      speakingGestureTimerRef.current = setTimeout(tick, nextDelay);
+    };
+    const firstDelay = 900 + Math.floor(Math.random() * 500);
+    speakingGestureTimerRef.current = setTimeout(tick, firstDelay);
+    return () => {
+      clearSpeakingGestureTimer();
+    };
+  }, [
+    clearSpeakingGestureTimer,
+    emotion,
+    isSpeaking,
+    markGesture,
+    resolveCurrentAvatarModelUrl,
+    runtime,
+    selectedPersona
+  ]);
 
   useEffect(() => {
     const adapter = adapterRef.current;
@@ -1088,6 +1196,12 @@ export default function App() {
         setIsSpeaking(speaking);
       },
       onMouthOpen: (value) => {
+        if (runtimeRef.current === "talkinghead" && pseudoVisemeActiveRef.current) {
+          if (LIPSYNC_DEBUG) {
+            console.info("[LipSync][3D] skip amplitude mouth (tts): pseudo-viseme active");
+          }
+          return;
+        }
         setMouthOpen(value);
         adapterRef.current?.setMouthOpen(value);
       },
@@ -1119,6 +1233,12 @@ export default function App() {
         setIsSpeaking(speaking);
       },
       onMouthOpen: (value) => {
+        if (runtimeRef.current === "talkinghead" && pseudoVisemeActiveRef.current) {
+          if (LIPSYNC_DEBUG) {
+            console.info("[LipSync][3D] skip amplitude mouth (realtime): pseudo-viseme active");
+          }
+          return;
+        }
         setMouthOpen(value);
         adapterRef.current?.setMouthOpen(value);
       },
@@ -1148,10 +1268,13 @@ export default function App() {
           .map((item) => normalizeGesture(item))
           .filter((item) => item !== "none");
         const chosenGesture =
-          candidateGestures.find((item) => modelCapability.allowedGestures.includes(item)) ?? "none";
+          candidateGestures.find((item) => modelCapability.allowedGestures.includes(item)) ??
+          pickNaturalGestureByEmotion(chosenEmotion, modelCapability.allowedGestures, lastGestureRef.current);
         if (chosenGesture !== "none") {
           adapterRef.current?.playGesture(chosenGesture);
           markGesture(chosenGesture);
+          lastGestureRef.current = chosenGesture;
+          lastGestureAtRef.current = Date.now();
         }
         setAnswer(event.reply);
         setReferences(event.references);
@@ -1477,10 +1600,13 @@ export default function App() {
         .map((item) => normalizeGesture(item))
         .filter((item) => item !== "none");
       const chosenGesture =
-        candidateGestures.find((item) => modelCapability.allowedGestures.includes(item)) ?? "none";
+        candidateGestures.find((item) => modelCapability.allowedGestures.includes(item)) ??
+        pickNaturalGestureByEmotion(chosenEmotion, modelCapability.allowedGestures, lastGestureRef.current);
       if (chosenGesture !== "none") {
         adapterRef.current?.playGesture(chosenGesture);
         markGesture(chosenGesture);
+        lastGestureRef.current = chosenGesture;
+        lastGestureAtRef.current = Date.now();
       }
 
       const shouldUseSelectedTtsVoice = Boolean(askVoiceId);

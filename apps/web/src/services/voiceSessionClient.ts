@@ -49,9 +49,9 @@ const readEnvNumber = (raw: unknown, fallback: number, min: number, max: number)
   return Math.min(max, Math.max(min, parsed));
 };
 
-const MOUTH_GAIN = readEnvNumber(import.meta.env.VITE_LIVE2D_MOUTH_GAIN, 1.4, 0.2, 4);
+const MOUTH_GAIN = readEnvNumber(import.meta.env.VITE_LIVE2D_MOUTH_GAIN, 2.2, 0.2, 5);
 const MOUTH_NOISE_FLOOR = readEnvNumber(import.meta.env.VITE_LIVE2D_MOUTH_NOISE_FLOOR, 0.02, 0, 0.2);
-const MOUTH_SMOOTHING = readEnvNumber(import.meta.env.VITE_LIVE2D_MOUTH_SMOOTHING, 0.75, 0, 0.95);
+const MOUTH_SMOOTHING = readEnvNumber(import.meta.env.VITE_LIVE2D_MOUTH_SMOOTHING, 0.35, 0, 0.95);
 
 export class VoiceSessionClient {
   private ws: WebSocket | null = null;

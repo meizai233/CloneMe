@@ -30,6 +30,7 @@ type TalkingHeadLike = {
 
 const DEFAULT_AVATAR_URL =
   "/models/talkinghead/brunette.glb";
+const LIPSYNC_DEBUG = String(import.meta.env.VITE_LIPSYNC_DEBUG ?? "1") !== "0";
 const INITIAL_EMOTION: AvatarEmotion = "warm";
 const INITIAL_GREETING_GESTURE: AvatarGesture = "openArms";
 const DEFAULT_TTS_LANG = import.meta.env.VITE_TALKINGHEAD_TTS_LANG || "zh-CN";
@@ -481,6 +482,18 @@ export function createTalkingHeadAdapter(
     }
     const mouthByOpen = profile.mouthOpen ?? profile.jawOpen ?? 0;
     state.mouthOpen = clamp01(mouthByOpen);
+    if (LIPSYNC_DEBUG) {
+      const activeChannels = Object.entries(state.mouthChannels)
+        .filter(([, value]) => Math.abs(value) >= 0.02)
+        .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+        .slice(0, 8);
+      console.info("[LipSync][3D model] viseme frame", {
+        input: viseme,
+        mapped,
+        mouthOpen: Number(state.mouthOpen.toFixed(3)),
+        topChannels: activeChannels.map(([key, value]) => `${key}:${value.toFixed(2)}`),
+      });
+    }
     emit();
   };
 
@@ -515,6 +528,9 @@ export function createTalkingHeadAdapter(
           modelUrlOverride?.trim() ||
           import.meta.env.VITE_TALKINGHEAD_AVATAR_URL ||
           DEFAULT_AVATAR_URL;
+        if (LIPSYNC_DEBUG) {
+          console.info("[LipSync][3D model] init TalkingHead avatar", { avatarUrl });
+        }
         const instance = new TalkingHead(hostNode, {
           cameraView: "upper",
           cameraRotateEnable: false,
@@ -718,11 +734,17 @@ export function createTalkingHeadAdapter(
       }, TALKINGHEAD_MOUTH_CHANNELS.length * 280 + 120);
       mouthShapeTimers.push(endTimer);
     },
-    runChinesePseudoVisemeSequence(visemes, stepMs = 170) {
+    runChinesePseudoVisemeSequence(visemes, stepMs = 70) {
       stopLipSync();
       mouthShapeTimers.forEach((item) => clearTimeout(item));
       mouthShapeTimers = [];
       if (visemes.length === 0) return;
+      if (LIPSYNC_DEBUG) {
+        console.groupCollapsed("[LipSync][3D model] runChinesePseudoVisemeSequence");
+        console.info("[LipSync][3D model] visemes:", visemes.join(" "));
+        console.info("[LipSync][3D model] stepMs:", stepMs, "count:", visemes.length);
+        console.groupEnd();
+      }
       state.speaking = true;
       emit();
       visemes.forEach((viseme, index) => {
