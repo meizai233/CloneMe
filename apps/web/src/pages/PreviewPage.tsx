@@ -16,6 +16,7 @@ import { resolveAvatarModelCapability } from "../avatar/modelCapabilities";
 import { getAvatar, type Avatar } from "../services/platform-api";
 
 const HARU_MODEL_URL = "/models/haru_greeter_pro_jp/runtime/haru_greeter_t05.model3.json";
+const PREVIEW_DEFAULT_VOICE_ID = "cosyvoice-v2-cloneme-de1186494da24f33992ab554e7ce480e";
 
 interface ChatMessage {
   role: "user" | "assistant";
@@ -54,6 +55,7 @@ export default function PreviewPage() {
   const [error, setError] = useState("");
   const [sessionId] = useState(() => `preview_${Date.now()}`);
   const [userId] = useState(() => `user_${Date.now().toString(36)}`);
+  const resolvedRealtimeVoiceId = avatar?.voice_id || PREVIEW_DEFAULT_VOICE_ID;
 
   // 自动滚动到底部
   useEffect(() => {
@@ -108,7 +110,7 @@ export default function PreviewPage() {
   // 初始化实时语音会话
   useEffect(() => {
     const voiceSession = new VoiceSessionClient({
-      voiceId: avatar?.voice_id || undefined,
+      voiceId: resolvedRealtimeVoiceId,
       playbackEnabled: false,
       onSpeakingChange: (s) => {
         adapterRef.current?.setSpeaking(s);
@@ -137,6 +139,7 @@ export default function PreviewPage() {
         setChatLoading(true);
         setChatPhase("thinking");
         ttsClientRef.current?.stop();
+        ttsClientRef.current?.setVoiceId(resolvedRealtimeVoiceId);
         const sentenceBuffer = new SentenceBuffer((sentence) => {
           ttsClientRef.current?.sendText(sentence);
         });
@@ -176,7 +179,7 @@ export default function PreviewPage() {
       voiceSession.disconnect();
       voiceSessionRef.current = null;
     };
-  }, [avatar?.voice_id]);
+  }, [resolvedRealtimeVoiceId]);
 
   // 思考动画
   useEffect(() => {
@@ -199,6 +202,7 @@ export default function PreviewPage() {
 
   const startRealtimeSession = useCallback(async () => {
     ttsClientRef.current?.stop();
+    ttsClientRef.current?.setVoiceId(resolvedRealtimeVoiceId);
     setCurrentReply("");
     setError("");
     setRealtimeLoading(true);
@@ -223,7 +227,7 @@ export default function PreviewPage() {
         sessionId,
         userId,
         persona: "general",
-        voiceId: avatar?.voice_id || undefined,
+        voiceId: resolvedRealtimeVoiceId,
         avatarModel: resolveAvatarModelCapability(HARU_MODEL_URL),
       });
       await client.startRecording();
@@ -235,7 +239,7 @@ export default function PreviewPage() {
     } finally {
       setRealtimeLoading(false);
     }
-  }, [avatar?.voice_id, sessionId, userId]);
+  }, [resolvedRealtimeVoiceId, sessionId, userId]);
 
   const usingLive2D = runtime === "live2d";
 
