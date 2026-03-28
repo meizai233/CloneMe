@@ -6,6 +6,7 @@ import {
   type AvatarRuntime,
   type Live2DDriver
 } from "./avatar/live2dAdapter";
+import { createTalkingHeadAdapter, TALKINGHEAD_MOUTH_CHANNELS } from "./avatar/talkingHeadAdapter";
 import { avatarIntroScripts } from "./avatar/modeIntro.js";
 import {
   createVoiceClone,
@@ -20,6 +21,9 @@ import {
 import { TTSClient, SentenceBuffer } from "./services/ttsClient";
 import { VoiceSessionClient } from "./services/voiceSessionClient";
 import { resolveAvatarModelCapability } from "./avatar/modelCapabilities";
+import type { LipSyncSource, LipSyncTimeline } from "./avatar/lipSyncTimeline";
+import pinyin from "pinyin";
+import "pinyin2ipa/dist/pinyin2ipa.js";
 
 
 function buildOfflineReply(question: string): string {
@@ -36,7 +40,7 @@ const NATORI_MODEL_URL = "/models/natori_pro_zh/runtime/natori_pro_t06.model3.js
 const PERSONA_STORAGE_KEY = "cloneme.selectedPersona";
 const SUPPORT_DEFAULT_VOICE_SAMPLE_AUDIO_URL =
   "https://oho-image-cdn.51downapp.cn/ohoKiroUpload/beaee4f1bcf44d2aa0381a885c5adc02_voice_1774599906915.webm";
-const SUPPORT_DEFAULT_VOICE_ID = "cosyvoice-v2-wanyan-81856f33a9854efe9146c08b67612297";
+const SUPPORT_DEFAULT_VOICE_ID = "cosyvoice-v2-cloneme-fffdfccb3d3a4b2087a1bf426a64a99f";
 const GENERAL_DEFAULT_VOICE_SAMPLE_AUDIO_URL =
   "https://oho-image-cdn.51downapp.cn/ohoKiroUpload/aa6dba6a16334fccb905776fc3fdfdfe_voice_1774593069461.webm";
 const GENERAL_DEFAULT_VOICE_ID = "cosyvoice-v2-cloneme-de1186494da24f33992ab554e7ce480e";
@@ -61,16 +65,6 @@ const ALL_AVATAR_GESTURES: AvatarGesture[] = [
   "discountHighlight",
   "comfortExplain",
 ];
-const EMOTION_LABELS: Record<AvatarEmotion, string> = {
-  neutral: "自然",
-  happy: "愉快",
-  thinking: "思考中",
-  excited: "兴奋",
-  confident: "自信",
-  warm: "温和",
-  serious: "严肃",
-  surprised: "惊讶",
-};
 const GESTURE_LABELS: Record<AvatarGesture, string> = {
   none: "无",
   nod: "点头",
@@ -82,6 +76,253 @@ const GESTURE_LABELS: Record<AvatarGesture, string> = {
   discountHighlight: "优惠强调",
   comfortExplain: "安抚解释",
 };
+const PREFERRED_AVATAR_RUNTIME: "live2d" | "talkinghead" =
+  String(import.meta.env.VITE_AVATAR_RUNTIME ?? "live2d").toLowerCase() === "talkinghead"
+    ? "talkinghead"
+    : "live2d";
+const TALKINGHEAD_DEFAULT_AVATAR_URL =
+  "/models/talkinghead/brunette.glb";
+const TALKINGHEAD_SUPPORT_AVATAR_URL =
+  import.meta.env.VITE_TALKINGHEAD_SUPPORT_AVATAR_URL || TALKINGHEAD_DEFAULT_AVATAR_URL;
+const TALKINGHEAD_GENERAL_AVATAR_URL =
+  import.meta.env.VITE_TALKINGHEAD_GENERAL_AVATAR_URL || TALKINGHEAD_DEFAULT_AVATAR_URL;
+const CHINESE_PSEUDO_VISEME_DEMO_TEXT = "你好，欢迎来到哈啰租车服务中心，今天我来帮你快速找到最划算的套餐方案。";
+const CHINESE_PSEUDO_VISEME_SPEED = 1.5;
+
+function summarizeLipSyncTimeline(timeline?: LipSyncTimeline): { source: LipSyncSource; info: string } | null {
+  if (!timeline) return null;
+  if (timeline.source === "viseme") {
+    const preview = timeline.visemes.slice(0, 8).join(" ");
+    return {
+      source: "viseme",
+      info: `viseme ${timeline.visemes.length} 项${preview ? `：${preview}` : ""}`,
+    };
+  }
+  if (timeline.source === "blendshape") {
+    const shapeNames = Array.from(
+      new Set(
+        timeline.anims.flatMap((anim) => Object.keys(anim.vs)).filter((name) => name)
+      )
+    );
+    return {
+      source: "blendshape",
+      info: `blendshape ${timeline.anims.length} 段 / 通道 ${shapeNames.slice(0, 6).join(", ") || "-"}`,
+    };
+  }
+  const preview = timeline.words.slice(0, 6).join(" ");
+  return {
+    source: timeline.source,
+    info: `${timeline.source} ${timeline.words.length} 词${preview ? `：${preview}` : ""}`,
+  };
+}
+
+function normalizePinyinSyllable(raw: string): string {
+  return raw.toLowerCase().replace(/\d/g, "").replace("ü", "v");
+}
+
+const PINYIN_INITIALS = ["zh", "ch", "sh", "b", "p", "m", "f", "d", "t", "n", "l", "g", "k", "h", "j", "q", "x", "r", "z", "c", "s"];
+const INITIAL_TO_TOKEN: Record<string, string> = {
+  b: "B",
+  p: "P",
+  m: "M",
+  f: "F",
+  d: "D",
+  t: "T",
+  n: "N",
+  l: "L",
+  g: "G",
+  k: "K",
+  h: "H",
+  j: "J",
+  q: "Q",
+  x: "X",
+  zh: "ZH",
+  ch: "CH",
+  sh: "SH",
+  r: "R",
+  z: "Z",
+  c: "C",
+  s: "S",
+};
+const IPA_INITIAL_RULES: Array<{ re: RegExp; token: string }> = [
+  { re: /^pʰ/, token: "P" },
+  { re: /^p/, token: "B" },
+  { re: /^m/, token: "M" },
+  { re: /^f/, token: "F" },
+  { re: /^tʰ/, token: "T" },
+  { re: /^t/, token: "D" },
+  { re: /^n/, token: "N" },
+  { re: /^l/, token: "L" },
+  { re: /^kʰ/, token: "K" },
+  { re: /^k/, token: "G" },
+  { re: /^x/, token: "H" },
+  { re: /^tɕʰ/, token: "Q" },
+  { re: /^tɕ/, token: "J" },
+  { re: /^ɕ/, token: "X" },
+  { re: /^ʈʂʰ/, token: "CH" },
+  { re: /^ʈʂ/, token: "ZH" },
+  { re: /^ʂ/, token: "SH" },
+  { re: /^ɻ/, token: "R" },
+  { re: /^tsʰ/, token: "C" },
+  { re: /^ts/, token: "Z" },
+  { re: /^s/, token: "S" },
+];
+const FINAL_TOKEN_RULES: Array<[RegExp, string]> = [
+  [/^iong$/, "IONG"],
+  [/^iang$/, "IANG"],
+  [/^uang$/, "UANG"],
+  [/^ueng$/, "UENG"],
+  [/^iao$/, "IAO"],
+  [/^ian$/, "IAN"],
+  [/^ing$/, "ING"],
+  [/^ang$/, "ANG"],
+  [/^eng$/, "ENG"],
+  [/^ong$/, "ONG"],
+  [/^uai$/, "UAI"],
+  [/^uan$/, "UAN"],
+  [/^van$/, "VAN"],
+  [/^iao$/, "IAO"],
+  [/^iu$/, "IU"],
+  [/^ie$/, "IE"],
+  [/^ia$/, "IA"],
+  [/^in$/, "IN"],
+  [/^un$/, "UN"],
+  [/^ui$/, "UI"],
+  [/^uo$/, "UO"],
+  [/^ua$/, "UA"],
+  [/^ve$/, "VE"],
+  [/^vn$/, "VN"],
+  [/^er$/, "ER"],
+  [/^ai$/, "AI"],
+  [/^ei$/, "EI"],
+  [/^ao$/, "AO"],
+  [/^ou$/, "OU"],
+  [/^an$/, "AN"],
+  [/^en$/, "EN"],
+  [/^a$/, "A"],
+  [/^o$/, "O"],
+  [/^e$/, "E"],
+  [/^i$/, "I"],
+  [/^u$/, "U"],
+  [/^v$/, "V"],
+];
+const HOLDABLE_FINALS = new Set([
+  "A", "O", "E", "I", "U", "V",
+  "AI", "EI", "AO", "OU",
+  "AN", "EN", "ANG", "ENG", "ONG",
+  "IA", "IE", "IAO", "IU",
+  "IAN", "IN", "IANG", "ING", "IONG",
+  "UA", "UO", "UAI", "UI", "UAN", "UN", "UANG", "UENG",
+  "VE", "VAN", "VN", "ER",
+]);
+
+function splitPinyinSyllable(py: string): { initialToken: string | null; final: string } {
+  const matchedInitial = PINYIN_INITIALS.find((item) => py.startsWith(item));
+  if (!matchedInitial) return { initialToken: null, final: py };
+  return {
+    initialToken: INITIAL_TO_TOKEN[matchedInitial] ?? null,
+    final: py.slice(matchedInitial.length),
+  };
+}
+
+function inferFinalToken(finalPart: string): string {
+  if (!finalPart) return "E";
+  for (const [rule, token] of FINAL_TOKEN_RULES) {
+    if (rule.test(finalPart)) return token;
+  }
+  return "E";
+}
+
+function normalizeIpaSyllable(raw: string): string {
+  return raw
+    .replace(/[0-9¹²³⁴⁵˥˧˨˩˦]/g, "")
+    .replace(/\s+/g, "")
+    .trim();
+}
+
+function callPinyin2ipa(input: string): string {
+  if (typeof window === "undefined") return "";
+  const converter = (window as unknown as { pinyin2ipa?: (value: string, options?: Record<string, unknown>) => string }).pinyin2ipa;
+  if (typeof converter !== "function") return "";
+  try {
+    return String(
+      converter(input, {
+        method: "sophisticated",
+        toneMarker: "number",
+        filterUnknown: true,
+      })
+    );
+  } catch {
+    return "";
+  }
+}
+
+function pinyinSyllableToIpa(py: string): string {
+  const out = callPinyin2ipa(py);
+  const first = out.split(/\s+/).find((item) => item.trim());
+  return normalizeIpaSyllable(first ?? "");
+}
+
+function splitIpaSyllable(ipa: string): { initialToken: string | null; finalPart: string } {
+  for (const rule of IPA_INITIAL_RULES) {
+    if (rule.re.test(ipa)) {
+      return {
+        initialToken: rule.token,
+        finalPart: ipa.replace(rule.re, ""),
+      };
+    }
+  }
+  return { initialToken: null, finalPart: ipa };
+}
+
+function inferFinalTokenFromIpa(ipaFinal: string): string | null {
+  if (!ipaFinal) return null;
+  if (/ɑ|a/.test(ipaFinal)) return "A";
+  if (/y|ɥ|u/.test(ipaFinal)) return "U";
+  if (/o|ɔ|ʊ/.test(ipaFinal)) return "O";
+  if (/ɚ|ɤ|ə|e|i/.test(ipaFinal)) return "E";
+  return null;
+}
+
+function buildChinesePseudoVisemePlan(text: string): { timeline: string[]; breakdown: string[] } {
+  const raw = pinyin(text, { style: pinyin.STYLE_NORMAL }) as string[][];
+  const timeline: string[] = ["SIL"];
+  const breakdown: string[] = [];
+  for (const token of raw) {
+    const syllableRaw = token?.[0] ?? "";
+    if (!/[a-zA-Z]/.test(syllableRaw)) {
+      if (timeline[timeline.length - 1] !== "SIL") timeline.push("SIL");
+      continue;
+    }
+    const py = normalizePinyinSyllable(syllableRaw);
+    const ipa = pinyinSyllableToIpa(py);
+    const ipaSplit = splitIpaSyllable(ipa);
+    const pySplit = splitPinyinSyllable(py);
+    const initialToken = ipaSplit.initialToken ?? pySplit.initialToken;
+    const finalToken = inferFinalTokenFromIpa(ipaSplit.finalPart) ?? inferFinalToken(pySplit.final);
+    const steps: string[] = [];
+    if (initialToken) timeline.push(initialToken);
+    if (initialToken) steps.push(initialToken);
+    timeline.push(finalToken);
+    steps.push(finalToken);
+    // Keep finals longer so pinyin mouth shape is perceivable.
+    if (HOLDABLE_FINALS.has(finalToken)) {
+      timeline.push(finalToken);
+      steps.push(`${finalToken}(hold)`);
+    }
+    if (/(n|ng)$/.test(pySplit.final) && finalToken !== "N") {
+      timeline.push("N");
+      steps.push("N");
+    }
+    if (/r$/.test(pySplit.final) && finalToken !== "ER" && finalToken !== "R") {
+      timeline.push("R");
+      steps.push("R");
+    }
+    breakdown.push(`${py}${ipa ? `/${ipa}` : ""} -> ${steps.join(" + ")}`);
+  }
+  if (timeline[timeline.length - 1] !== "SIL") timeline.push("SIL");
+  return { timeline, breakdown };
+}
 
 function Avatar2D(props: {
   speaking: boolean;
@@ -93,12 +334,15 @@ function Avatar2D(props: {
   canvasRef: RefObject<HTMLCanvasElement | null>;
   modelLabel: string;
   currentGesture: AvatarGesture;
+  lipSyncSource: LipSyncSource;
+  lipSyncTimelineInfo: string;
 }) {
-  const { speaking, emotion, mouthOpen, ready, runtime, runtimeError, canvasRef, modelLabel, currentGesture } = props;
+  const { speaking, emotion, mouthOpen, ready, runtime, runtimeError, canvasRef, modelLabel, currentGesture, lipSyncSource, lipSyncTimelineInfo } = props;
   const emotionClass = `emotion-${emotion}`;
   const usingLive2D = runtime === "live2d";
+  const usingTalkingHead = runtime === "talkinghead";
+  const usingAvatarRuntime = usingLive2D || usingTalkingHead;
   const showLoader = !ready;
-  const [emotionUpdatedAt, setEmotionUpdatedAt] = useState(() => Date.now());
   const stageRef = useRef<HTMLDivElement | null>(null);
   const [previewFullscreen, setPreviewFullscreen] = useState(false);
 
@@ -113,10 +357,6 @@ function Avatar2D(props: {
       document.removeEventListener("fullscreenchange", syncFullscreenState);
     };
   }, []);
-
-  useEffect(() => {
-    setEmotionUpdatedAt(Date.now());
-  }, [emotion]);
 
   const togglePreviewFullscreen = useCallback(async () => {
     const stage = stageRef.current;
@@ -136,7 +376,7 @@ function Avatar2D(props: {
     <div className={`avatar-card ${emotionClass}`}>
       <div
         ref={stageRef}
-        className={`avatar-stage ${usingLive2D ? "avatar-stage-live2d" : "avatar-stage-loader"} ${previewFullscreen ? "avatar-stage-preview-fullscreen" : ""}`}
+        className={`avatar-stage ${usingLive2D ? "avatar-stage-live2d" : ""} ${usingTalkingHead ? "avatar-stage-talkinghead" : ""} ${!usingAvatarRuntime ? "avatar-stage-loader" : ""} ${previewFullscreen ? "avatar-stage-preview-fullscreen" : ""}`}
       >
         <button
           type="button"
@@ -152,7 +392,7 @@ function Avatar2D(props: {
 
         <canvas ref={canvasRef} id="avatar-canvas" className={`avatar-canvas ${usingLive2D ? "visible" : ""}`} />
 
-        {!usingLive2D && (
+        {!usingAvatarRuntime && (
           <div className={`avatar-loader-shell ${speaking ? "is-speaking" : ""}`}>
             <div className="avatar-loader-core" style={{ transform: `scale(${1 + mouthOpen * 0.18})` }} />
             <div className="avatar-loader-ring avatar-loader-ring-a" />
@@ -167,21 +407,17 @@ function Avatar2D(props: {
         )}
       </div>
 
-      <p className="avatar-runtime">
-        渲染模式：{usingLive2D ? "Live2D Runtime" : "Mock Fallback"}
-      </p>
-      {!usingLive2D && runtimeError && <p className="avatar-runtime-error">Live2D 错误：{runtimeError}</p>}
+      <p className="avatar-runtime">渲染模式：{usingLive2D ? "Live2D Runtime" : usingTalkingHead ? "TalkingHead Runtime" : "Mock Fallback"}</p>
+      {!usingAvatarRuntime && runtimeError && <p className="avatar-runtime-error">数字人引擎错误：{runtimeError}</p>}
       <p className="avatar-status">
-        状态：{ready ? "模型已就绪" : "模型加载中"} / 模型：{modelLabel} / 情绪：{EMOTION_LABELS[emotion]} / 动作：
-        {GESTURE_LABELS[currentGesture]} / 口型：{Math.round(mouthOpen * 100)}% / 语音：
+        状态：{ready ? "模型已就绪" : "模型加载中"} / 模型：{modelLabel} / 动作：{GESTURE_LABELS[currentGesture]} / 语音：
         {speaking ? "播报中" : "待机"}
       </p>
       <p className="avatar-emotion-live" aria-live="polite">
-        实时情绪：<strong>{EMOTION_LABELS[emotion]}</strong>
-        <span className="avatar-emotion-meta">({emotion})</span>
-        <span className="avatar-emotion-meta">
-          更新于 {new Date(emotionUpdatedAt).toLocaleTimeString("zh-CN", { hour12: false })}
-        </span>
+        {usingTalkingHead ? "GLB 口型入参" : "口型入参"}：
+        <strong>{lipSyncSource}</strong>
+        <span className="avatar-emotion-meta">jawOpen={mouthOpen.toFixed(2)}</span>
+        <span className="avatar-emotion-meta">{lipSyncTimelineInfo}</span>
       </p>
     </div>
   );
@@ -197,11 +433,14 @@ export default function App() {
   const ttsClientRef = useRef<TTSClient | null>(null);
   const voiceSessionRef = useRef<VoiceSessionClient | null>(null);
   const sentenceBufferRef = useRef<SentenceBuffer | null>(null);
+  const realtimeSentenceBufferRef = useRef<SentenceBuffer | null>(null);
   const typingQueueRef = useRef("");
   const typingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastGestureRef = useRef<AvatarGesture>("none");
   const lastGestureAtRef = useRef(0);
   const gestureResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pseudoVisemeQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const pseudoVisemeSessionRef = useRef(0);
 
   const [personas, setPersonas] = useState<PersonaInfo[]>([]);
   const [selectedPersona, setSelectedPersona] = useState<string>(() => {
@@ -222,6 +461,11 @@ export default function App() {
   const [activeGesture, setActiveGesture] = useState<AvatarGesture>("none");
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [mouthOpen, setMouthOpen] = useState(0);
+  const [talkingHeadMouthChannels, setTalkingHeadMouthChannels] = useState<Record<string, number>>(() =>
+    Object.fromEntries(TALKINGHEAD_MOUTH_CHANNELS.map((item) => [item, 0]))
+  );
+  const [activeMouthChannel, setActiveMouthChannel] = useState("-");
+  const [pinyinPseudoBreakdown, setPinyinPseudoBreakdown] = useState("-");
   const [initLoading, setInitLoading] = useState(false);
   const [chatLoading, setChatLoading] = useState(false);
   const [avatarReady, setAvatarReady] = useState(false);
@@ -255,6 +499,22 @@ export default function App() {
   const [realtimePartialText, setRealtimePartialText] = useState("");
   const [realtimeFinalText, setRealtimeFinalText] = useState("");
   const [realtimeLoading, setRealtimeLoading] = useState(false);
+  const [realtimeConnected, setRealtimeConnected] = useState(false);
+  const [lipSyncSource, setLipSyncSource] = useState<LipSyncSource>("amplitude");
+  const [lipSyncTimelineInfo, setLipSyncTimelineInfo] = useState("音频振幅");
+  const [avatarPlanDebug, setAvatarPlanDebug] = useState({
+    requestedEmotion: "-",
+    appliedEmotion: "-",
+    requestedGestures: "-",
+    appliedGesture: "-",
+    reason: "-",
+  });
+  const [avatarDebugFlow, setAvatarDebugFlow] = useState({
+    lastEvent: "init",
+    lastTurnId: 0,
+    llmDoneCount: 0,
+    lipSyncEventCount: 0,
+  });
 
   // 每次页面加载生成新的 userId，刷新页面后自动更换
   const [userId] = useState(() => {
@@ -266,6 +526,22 @@ export default function App() {
   });
 
   const loading = initLoading || chatLoading || voiceCloneLoading || realtimeLoading;
+
+  useEffect(() => {
+    if (answer.trim() && avatarPlanDebug.requestedEmotion === "-" && avatarDebugFlow.llmDoneCount === 0) {
+      setAvatarPlanDebug({
+        requestedEmotion: emotion,
+        appliedEmotion: emotion,
+        requestedGestures: activeGesture,
+        appliedGesture: activeGesture,
+        reason: "未收到 llm.done，使用当前状态兜底",
+      });
+      setAvatarDebugFlow((prev) => ({
+        ...prev,
+        lastEvent: "fallback.from.answer",
+      }));
+    }
+  }, [activeGesture, answer, avatarDebugFlow.llmDoneCount, avatarPlanDebug.requestedEmotion, emotion]);
 
   const cleanupPlayback = useCallback(() => {
     if (fallbackTimerRef.current) {
@@ -286,6 +562,7 @@ export default function App() {
       stopLipSyncRef.current = null;
     }
 
+    adapterRef.current?.interruptSpeech?.();
     adapterRef.current?.setSpeaking(false);
   }, []);
 
@@ -295,6 +572,49 @@ export default function App() {
       typingTimerRef.current = null;
     }
     typingQueueRef.current = "";
+  }, []);
+
+  const stopPseudoVisemeQueue = useCallback(() => {
+    pseudoVisemeSessionRef.current += 1;
+    pseudoVisemeQueueRef.current = Promise.resolve();
+    adapterRef.current?.interruptSpeech?.();
+    adapterRef.current?.setSpeaking(false);
+  }, []);
+
+  const enqueuePseudoVisemeText = useCallback((text: string, fallbackCues?: number[]) => {
+    const cleaned = text.replace(/（[^）]*）/g, "").trim();
+    if (!cleaned) return;
+    const runToken = pseudoVisemeSessionRef.current;
+    const plan = buildChinesePseudoVisemePlan(cleaned);
+    const visemes = plan.timeline;
+    const stepMs = Math.max(70, Math.round(185 / CHINESE_PSEUDO_VISEME_SPEED));
+    const expectedMs = visemes.length * stepMs + 100;
+
+    pseudoVisemeQueueRef.current = pseudoVisemeQueueRef.current.then(async () => {
+      if (runToken !== pseudoVisemeSessionRef.current) return;
+      const driver = adapterRef.current;
+      if (!driver) return;
+
+      if (visemes.length > 0 && driver.runChinesePseudoVisemeSequence) {
+        driver.runChinesePseudoVisemeSequence(visemes, stepMs);
+        setLipSyncSource("viseme");
+        setLipSyncTimelineInfo(
+          `文本口型(${CHINESE_PSEUDO_VISEME_SPEED}x)：${visemes.slice(0, 10).join(" ")}${visemes.length > 10 ? " ..." : ""}`
+        );
+        await new Promise<void>((resolve) => {
+          setTimeout(() => resolve(), expectedMs);
+        });
+        return;
+      }
+
+      if (fallbackCues && fallbackCues.length > 0) {
+        stopLipSyncRef.current = driver.playLipSync(fallbackCues);
+        driver.setSpeaking(true);
+        await new Promise<void>((resolve) => {
+          setTimeout(() => resolve(), Math.max(900, fallbackCues.length * 120));
+        });
+      }
+    });
   }, []);
 
   const clearIntroTimers = useCallback(() => {
@@ -319,7 +639,8 @@ export default function App() {
     introStopLipSyncRef.current = null;
     ttsClientRef.current?.stop();
     adapterRef.current?.setSpeaking(false);
-  }, []);
+    stopPseudoVisemeQueue();
+  }, [stopPseudoVisemeQueue]);
 
   const stopModeIntro = useCallback(() => {
     introRunIdRef.current += 1;
@@ -378,9 +699,11 @@ export default function App() {
         markGesture(item.gesture);
         setAnswer((prev) => `${prev}\n${item.text}`);
         stopModeIntroSpeech();
-        introStopLipSyncRef.current = adapterRef.current?.playLipSync(item.cues) ?? null;
-        adapterRef.current?.setSpeaking(true);
         const narration = item.text.replace(/（[^）]*）/g, "").trim();
+        enqueuePseudoVisemeText(narration, item.cues);
+        introStopLipSyncRef.current = () => {
+          stopPseudoVisemeQueue();
+        };
         if (narration) {
           ttsClient?.sendText(narration);
         }
@@ -398,10 +721,12 @@ export default function App() {
     },
     [
       avatarReady,
+      enqueuePseudoVisemeText,
       hasCustomVoiceClone,
       markGesture,
       stopModeIntro,
       stopModeIntroSpeech,
+      stopPseudoVisemeQueue,
       voiceId,
       waitWithIntroTimer
     ]
@@ -557,6 +882,26 @@ export default function App() {
     [personas]
   );
 
+  const resolveTalkingHeadModelUrl = useCallback(
+    (personaKey: string): string => {
+      const matchedPersona = personas.find((item) => item.key === personaKey);
+      const personaText = `${personaKey} ${matchedPersona?.name ?? ""}`.toLowerCase();
+      if (personaKey === "general" || personaText.includes("通用") || personaText.includes("general")) {
+        return TALKINGHEAD_GENERAL_AVATAR_URL;
+      }
+      return TALKINGHEAD_SUPPORT_AVATAR_URL;
+    },
+    [personas]
+  );
+
+  const resolveCurrentAvatarModelUrl = useCallback(
+    (personaKey: string): string =>
+      PREFERRED_AVATAR_RUNTIME === "talkinghead"
+        ? resolveTalkingHeadModelUrl(personaKey)
+        : resolveLive2DModelUrl(personaKey),
+    [resolveLive2DModelUrl, resolveTalkingHeadModelUrl]
+  );
+
   const resolveRenderableModelUrl = useCallback(async (preferredModelUrl: string): Promise<string> => {
     if (preferredModelUrl !== NATORI_MODEL_URL || typeof window === "undefined") {
       return preferredModelUrl;
@@ -608,16 +953,37 @@ export default function App() {
   }, [chatLoading, chatPhase]);
 
   useEffect(() => {
-    const adapter = createLive2DAdapter({
-      onStateChange(state) {
-        setEmotion(state.emotion);
-        setRuntime(state.runtime);
-        setIsSpeaking(state.speaking);
-        setMouthOpen(state.mouthOpen);
-        setAvatarReady(state.initialized);
-        setAvatarRuntimeError(state.runtimeError);
-      }
-    });
+    const adapter =
+      PREFERRED_AVATAR_RUNTIME === "talkinghead"
+        ? createTalkingHeadAdapter({
+            onStateChange(state) {
+              setEmotion(state.emotion);
+              setRuntime(state.runtime);
+              setIsSpeaking(state.speaking);
+              setMouthOpen(state.mouthOpen);
+              setTalkingHeadMouthChannels(state.mouthChannels);
+              const activeEntry = Object.entries(state.mouthChannels).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))[0];
+              if (activeEntry && Math.abs(activeEntry[1]) > 0.01) {
+                setActiveMouthChannel(`${activeEntry[0]}=${activeEntry[1].toFixed(2)}`);
+              } else {
+                setActiveMouthChannel("-");
+              }
+              setAvatarReady(state.initialized);
+              setAvatarRuntimeError(state.runtimeError);
+            },
+          })
+        : createLive2DAdapter({
+            onStateChange(state) {
+              setEmotion(state.emotion);
+              setRuntime(state.runtime);
+              setIsSpeaking(state.speaking);
+              setMouthOpen(state.mouthOpen);
+              setTalkingHeadMouthChannels(Object.fromEntries(TALKINGHEAD_MOUTH_CHANNELS.map((item) => [item, 0])));
+              setActiveMouthChannel("-");
+              setAvatarReady(state.initialized);
+              setAvatarRuntimeError(state.runtimeError);
+            },
+          });
 
     adapterRef.current = adapter;
 
@@ -637,7 +1003,10 @@ export default function App() {
   useEffect(() => {
     const adapter = adapterRef.current;
     if (!adapter) return;
-    const modelUrl = resolveLive2DModelUrl(selectedPersona);
+    const preferredModelUrl =
+      PREFERRED_AVATAR_RUNTIME === "talkinghead"
+        ? resolveTalkingHeadModelUrl(selectedPersona)
+        : resolveLive2DModelUrl(selectedPersona);
     let cancelled = false;
 
     // 角色切换时触发一次模型重载。
@@ -649,7 +1018,10 @@ export default function App() {
           requestAnimationFrame(() => resolve());
         });
         if (cancelled) return;
-        const renderableModelUrl = await resolveRenderableModelUrl(modelUrl);
+        const renderableModelUrl =
+          PREFERRED_AVATAR_RUNTIME === "talkinghead"
+            ? preferredModelUrl
+            : await resolveRenderableModelUrl(preferredModelUrl);
         if (cancelled) return;
         setActiveModelUrl(renderableModelUrl);
         setActiveGesture("none");
@@ -661,7 +1033,7 @@ export default function App() {
       cancelled = true;
       clearTimeout(initTimer);
     };
-  }, [resolveLive2DModelUrl, resolveRenderableModelUrl, selectedPersona]);
+  }, [resolveLive2DModelUrl, resolveRenderableModelUrl, resolveTalkingHeadModelUrl, selectedPersona]);
 
   // 初始化 TTS 客户端
   useEffect(() => {
@@ -672,7 +1044,6 @@ export default function App() {
         setIsSpeaking(speaking);
       },
       onMouthOpen: (value) => {
-        setMouthOpen(value);
         adapterRef.current?.setMouthOpen(value);
       },
     });
@@ -703,7 +1074,6 @@ export default function App() {
         setIsSpeaking(speaking);
       },
       onMouthOpen: (value) => {
-        setMouthOpen(value);
         adapterRef.current?.setMouthOpen(value);
       },
       onAsrPartial: (text) => {
@@ -716,13 +1086,30 @@ export default function App() {
         setReferences([]);
         setChatPhase("thinking");
         setChatLoading(true);
+        realtimeSentenceBufferRef.current = new SentenceBuffer((sentence) => {
+          enqueuePseudoVisemeText(sentence);
+        });
+        setAvatarPlanDebug({
+          requestedEmotion: "规划中...",
+          appliedEmotion: emotion,
+          requestedGestures: "规划中...",
+          appliedGesture: activeGesture,
+          reason: "等待 llm.done",
+        });
+        setAvatarDebugFlow((prev) => ({
+          ...prev,
+          lastEvent: "asr.final",
+        }));
       },
       onLlmDelta: (text) => {
         setChatPhase("typing");
         setAnswer((prev) => prev + text);
+        realtimeSentenceBufferRef.current?.push(text);
       },
       onLlmDone: (event) => {
-        const modelCapability = resolveAvatarModelCapability(resolveLive2DModelUrl(selectedPersona));
+        const modelCapability = resolveAvatarModelCapability(
+          resolveCurrentAvatarModelUrl(selectedPersona)
+        );
         const planEmotion = normalizeEmotion(event.avatarPlan?.emotion);
         const chosenEmotion = modelCapability.allowedEmotions.includes(planEmotion)
           ? planEmotion
@@ -737,11 +1124,41 @@ export default function App() {
           adapterRef.current?.playGesture(chosenGesture);
           markGesture(chosenGesture);
         }
+        setAvatarPlanDebug({
+          requestedEmotion: event.avatarPlan?.emotion ?? event.emotion ?? "neutral",
+          appliedEmotion: chosenEmotion,
+          requestedGestures: (event.avatarPlan?.gestures ?? []).join(", ") || "none",
+          appliedGesture: chosenGesture,
+          reason: event.avatarPlan?.reason ?? "fallback",
+        });
+        setAvatarDebugFlow((prev) => ({
+          lastEvent: "voice.llm.done",
+          lastTurnId: event.turnId,
+          llmDoneCount: prev.llmDoneCount + 1,
+          lipSyncEventCount: prev.lipSyncEventCount,
+        }));
         setAnswer(event.reply);
         setReferences(event.references);
+        realtimeSentenceBufferRef.current?.flush();
+        realtimeSentenceBufferRef.current = null;
         setChatPhase("idle");
         setChatLoading(false);
-      }
+      },
+      onConnectionChange: (connected) => {
+        setRealtimeConnected(connected);
+      },
+      onLipSyncTimeline: (event) => {
+        const summary = summarizeLipSyncTimeline(event.timeline);
+        if (summary) {
+          setLipSyncSource(summary.source);
+          setLipSyncTimelineInfo(summary.info);
+        }
+        setAvatarDebugFlow((prev) => ({
+          ...prev,
+          lastEvent: "voice.tts.lipsync",
+          lipSyncEventCount: prev.lipSyncEventCount + 1,
+        }));
+      },
     });
     voiceSessionRef.current = voiceSession;
     void voiceSession.connect().catch(() => {
@@ -753,15 +1170,25 @@ export default function App() {
       voiceSessionRef.current = null;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enqueuePseudoVisemeText]);
 
   const playAnswerAudio = useCallback(
-    async (audioUrl: string, cues: number[]) => {
+    async (audioUrl: string, cues: number[], timeline?: LipSyncTimeline) => {
       cleanupPlayback();
 
       const adapter = adapterRef.current;
       if (!adapter || !audioUrl) {
         throw new Error("音频不可用");
+      }
+
+      const summary = summarizeLipSyncTimeline(timeline);
+      if (summary) {
+        setLipSyncSource(summary.source);
+        setLipSyncTimelineInfo(summary.info);
+      } else {
+        setLipSyncSource("amplitude");
+        setLipSyncTimelineInfo(`cues ${cues.length} 项`);
       }
 
       stopLipSyncRef.current = adapter.playLipSync(cues);
@@ -778,8 +1205,16 @@ export default function App() {
   );
 
   const playFallbackLipSync = useCallback(
-    (cues: number[]) => {
+    (cues: number[], timeline?: LipSyncTimeline) => {
       const safeCues = cues.length > 0 ? cues : [0.2, 0.7, 0.35, 0.8, 0.25, 0.65];
+      const summary = summarizeLipSyncTimeline(timeline);
+      if (summary) {
+        setLipSyncSource(summary.source);
+        setLipSyncTimelineInfo(summary.info);
+      } else {
+        setLipSyncSource("amplitude");
+        setLipSyncTimelineInfo(`fallback cues ${safeCues.length} 项`);
+      }
       stopLipSyncRef.current = adapterRef.current?.playLipSync(safeCues) ?? null;
       adapterRef.current?.setSpeaking(true);
       fallbackTimerRef.current = setTimeout(() => {
@@ -932,12 +1367,15 @@ export default function App() {
   const stopRealtimeSession = useCallback(() => {
     voiceSessionRef.current?.interrupt();
     voiceSessionRef.current?.stopRecording();
+    realtimeSentenceBufferRef.current?.reset();
+    realtimeSentenceBufferRef.current = null;
+    stopPseudoVisemeQueue();
     setRealtimeActive(false);
     setRealtimeLoading(false);
     setRealtimePartialText("");
     setChatPhase("idle");
     setChatLoading(false);
-  }, []);
+  }, [stopPseudoVisemeQueue]);
 
   const startRealtimeSession = useCallback(async () => {
     stopModeIntro();
@@ -961,7 +1399,7 @@ export default function App() {
         userId,
         persona: selectedPersona,
         voiceId: voiceId ?? undefined,
-        avatarModel: resolveAvatarModelCapability(resolveLive2DModelUrl(selectedPersona)),
+        avatarModel: resolveAvatarModelCapability(resolveCurrentAvatarModelUrl(selectedPersona)),
       });
       await client.startRecording();
       setRealtimeActive(true);
@@ -974,7 +1412,7 @@ export default function App() {
     }
   }, [
     cleanupPlayback,
-    resolveLive2DModelUrl,
+    resolveCurrentAvatarModelUrl,
     selectedPersona,
     sessionId,
     stopModeIntro,
@@ -984,9 +1422,14 @@ export default function App() {
   ]);
 
   const runAsk = useCallback(async () => {
+    setAvatarDebugFlow((prev) => ({
+      ...prev,
+      lastEvent: "smart.ask.start",
+    }));
     stopRealtimeSession();
     // 提问优先级最高：先硬中断当前自动播报/口型，再进入新一轮问答。
     ttsClientRef.current?.stop();
+    stopPseudoVisemeQueue();
     sentenceBufferRef.current?.reset();
     sentenceBufferRef.current = null;
     stopModeIntro();
@@ -1025,6 +1468,7 @@ export default function App() {
       // 创建句子缓冲器，每凑满一句就发送到 TTS
       const sentenceBuffer = new SentenceBuffer((sentence) => {
         ttsClientRef.current?.sendText(sentence);
+        enqueuePseudoVisemeText(sentence);
       });
       sentenceBufferRef.current = sentenceBuffer;
 
@@ -1033,7 +1477,7 @@ export default function App() {
         persona: selectedPersona,
         sessionId,
         userId,
-        avatarModel: resolveAvatarModelCapability(resolveLive2DModelUrl(selectedPersona)),
+        avatarModel: resolveAvatarModelCapability(resolveCurrentAvatarModelUrl(selectedPersona)),
         onThinking: () => {
           setChatPhase("thinking");
         },
@@ -1044,6 +1488,10 @@ export default function App() {
           setChatPhase("typing");
           pushTypewriterText(increment);
           sentenceBuffer.push(increment);
+          setAvatarDebugFlow((prev) => ({
+            ...prev,
+            lastEvent: "smart.delta",
+          }));
         },
       });
 
@@ -1059,7 +1507,7 @@ export default function App() {
 
       setAnswer(data.reply);
       setReferences(data.references);
-      const modelCapability = resolveAvatarModelCapability(resolveLive2DModelUrl(selectedPersona));
+      const modelCapability = resolveAvatarModelCapability(resolveCurrentAvatarModelUrl(selectedPersona));
       const planEmotion = normalizeEmotion(data.avatarPlan?.emotion);
       const chosenEmotion = modelCapability.allowedEmotions.includes(planEmotion)
         ? planEmotion
@@ -1075,16 +1523,28 @@ export default function App() {
         adapterRef.current?.playGesture(chosenGesture);
         markGesture(chosenGesture);
       }
-
+      setAvatarPlanDebug({
+        requestedEmotion: data.avatarPlan?.emotion ?? data.emotion ?? "neutral",
+        appliedEmotion: chosenEmotion,
+        requestedGestures: (data.avatarPlan?.gestures ?? []).join(", ") || "none",
+        appliedGesture: chosenGesture,
+        reason: data.avatarPlan?.reason ?? "fallback",
+      });
+      setAvatarDebugFlow((prev) => ({
+        lastEvent: "smart.done",
+        lastTurnId: prev.lastTurnId + 1,
+        llmDoneCount: prev.llmDoneCount + 1,
+        lipSyncEventCount: prev.lipSyncEventCount,
+      }));
       if (data.audioUrl) {
         try {
-          await playAnswerAudio(data.audioUrl, data.phonemeCues);
+          await playAnswerAudio(data.audioUrl, data.phonemeCues, data.lipSyncTimeline);
         } catch {
           setErrorMessage("语音播放失败，已回退到离线口型演示。");
-          playFallbackLipSync(data.phonemeCues);
+          playFallbackLipSync(data.phonemeCues, data.lipSyncTimeline);
         }
       } else {
-        playFallbackLipSync(data.phonemeCues);
+        playFallbackLipSync(data.phonemeCues, data.lipSyncTimeline);
       }
     } catch (error) {
       stopTypewriter();
@@ -1097,6 +1557,17 @@ export default function App() {
       setTimeout(() => {
         adapterRef.current?.setEmotion("neutral");
       }, 1500);
+      setAvatarPlanDebug({
+        requestedEmotion: "-",
+        appliedEmotion: "thinking",
+        requestedGestures: "-",
+        appliedGesture: "none",
+        reason: `smart.error: ${message}`,
+      });
+      setAvatarDebugFlow((prev) => ({
+        ...prev,
+        lastEvent: "smart.error",
+      }));
     } finally {
       setChatPhase("idle");
       setChatLoading(false);
@@ -1111,12 +1582,81 @@ export default function App() {
     userId,
     playAnswerAudio,
     playFallbackLipSync,
+    enqueuePseudoVisemeText,
     question,
-    resolveLive2DModelUrl,
+    resolveCurrentAvatarModelUrl,
     stopRealtimeSession,
     stopModeIntro,
+    stopPseudoVisemeQueue,
     stopTypewriter
   ]);
+
+  const runMouthShapeTest = useCallback(() => {
+    adapterRef.current?.runMouthShapeTest?.();
+    setLipSyncSource("amplitude");
+    setLipSyncTimelineInfo("手动口型序列");
+    setAvatarDebugFlow((prev) => ({
+      ...prev,
+      lastEvent: "manual.mouthshape.test",
+      lipSyncEventCount: prev.lipSyncEventCount + 1,
+    }));
+  }, []);
+
+  const runVowelMouthTest = useCallback(() => {
+    adapterRef.current?.runVowelMouthTest?.();
+    setLipSyncSource("amplitude");
+    setLipSyncTimelineInfo("元音口型 A/E/I/O/U");
+    setAvatarDebugFlow((prev) => ({
+      ...prev,
+      lastEvent: "manual.mouthshape.vowels",
+      lipSyncEventCount: prev.lipSyncEventCount + 1,
+    }));
+  }, []);
+
+  const runTalkingMouthTest = useCallback(() => {
+    adapterRef.current?.runTalkingMouthTest?.();
+    setLipSyncSource("amplitude");
+    setLipSyncTimelineInfo("说话节奏口型");
+    setAvatarDebugFlow((prev) => ({
+      ...prev,
+      lastEvent: "manual.mouthshape.talking",
+      lipSyncEventCount: prev.lipSyncEventCount + 1,
+    }));
+  }, []);
+
+  const runFullMouthChannelSweep = useCallback(() => {
+    adapterRef.current?.runFullMouthChannelSweep?.();
+    setLipSyncSource("blendshape");
+    setLipSyncTimelineInfo("GLB 全口型通道轮巡");
+    setAvatarDebugFlow((prev) => ({
+      ...prev,
+      lastEvent: "manual.mouthshape.full-sweep",
+      lipSyncEventCount: prev.lipSyncEventCount + 1,
+    }));
+  }, []);
+
+  const runChinesePseudoVisemeDemo = useCallback(() => {
+    const plan = buildChinesePseudoVisemePlan(CHINESE_PSEUDO_VISEME_DEMO_TEXT);
+    const visemes = plan.timeline;
+    const stepMs = Math.max(70, Math.round(185 / CHINESE_PSEUDO_VISEME_SPEED));
+    adapterRef.current?.runChinesePseudoVisemeSequence?.(visemes, stepMs);
+    setLipSyncSource("viseme");
+    setLipSyncTimelineInfo(`中文伪viseme(${CHINESE_PSEUDO_VISEME_SPEED}x)：${visemes.slice(0, 16).join(" ")}${visemes.length > 16 ? " ..." : ""}`);
+    setPinyinPseudoBreakdown(plan.breakdown.slice(0, 8).join(" | "));
+    setAvatarDebugFlow((prev) => ({
+      ...prev,
+      lastEvent: "manual.mouthshape.cn-pseudo",
+      lipSyncEventCount: prev.lipSyncEventCount + 1,
+    }));
+  }, []);
+
+  const runGestureShowcase = useCallback(() => {
+    adapterRef.current?.runGestureShowcase?.();
+    setAvatarDebugFlow((prev) => ({
+      ...prev,
+      lastEvent: "manual.gesture.showcase",
+    }));
+  }, []);
 
   async function onAsk(event: FormEvent) {
     event.preventDefault();
@@ -1277,7 +1817,8 @@ export default function App() {
           <div className="voice-clone-box">
             <h3>实时语音对话</h3>
             <p className="voice-hint">
-              当前模式：{realtimeActive ? "通话中（可插话打断）" : "待机"}
+              当前模式：{realtimeActive ? "通话中（可插话打断）" : "待机"} / 连接：
+              {realtimeConnected ? "已连接" : "重连中"}
             </p>
             <div className="recording-controls">
               {!realtimeActive ? (
@@ -1321,6 +1862,8 @@ export default function App() {
           canvasRef={avatarCanvasRef}
           modelLabel={resolveAvatarModelCapability(activeModelUrl).modelLabel}
           currentGesture={activeGesture}
+          lipSyncSource={lipSyncSource}
+          lipSyncTimelineInfo={lipSyncTimelineInfo}
         />
         <div className="chat-dialog">
           <div className="chat-dialog-header">
@@ -1337,6 +1880,8 @@ export default function App() {
                   className="stop-audio-btn"
                   onClick={() => {
                     ttsClientRef.current?.stop();
+                    voiceSessionRef.current?.interrupt();
+                    adapterRef.current?.interruptSpeech?.();
                     adapterRef.current?.setSpeaking(false);
                     setIsSpeaking(false);
                   }}
@@ -1360,6 +1905,81 @@ export default function App() {
               </ul>
             </div>
           )}
+          <div className="chat-dialog-refs">
+            <h4>Avatar 调试</h4>
+            <ul>
+              <li>
+                口型策略：简单振幅/cues
+                <button
+                  type="button"
+                  onClick={runMouthShapeTest}
+                  style={{ marginLeft: 8 }}
+                >
+                  口型压测
+                </button>
+                <button
+                  type="button"
+                  onClick={runVowelMouthTest}
+                  style={{ marginLeft: 8 }}
+                >
+                  元音口型
+                </button>
+                <button
+                  type="button"
+                  onClick={runTalkingMouthTest}
+                  style={{ marginLeft: 8 }}
+                >
+                  说话口型
+                </button>
+                <button
+                  type="button"
+                  onClick={runFullMouthChannelSweep}
+                  style={{ marginLeft: 8 }}
+                >
+                  全口型枚举
+                </button>
+                <button
+                  type="button"
+                  onClick={runChinesePseudoVisemeDemo}
+                  style={{ marginLeft: 8 }}
+                >
+                  中文伪viseme
+                </button>
+                <button
+                  type="button"
+                  onClick={runGestureShowcase}
+                  style={{ marginLeft: 8 }}
+                >
+                  动作串联
+                </button>
+              </li>
+              <li>计划情绪：{avatarPlanDebug.requestedEmotion}</li>
+              <li>实际情绪：{avatarPlanDebug.appliedEmotion}</li>
+              <li>计划动作：{avatarPlanDebug.requestedGestures}</li>
+              <li>实际动作：{avatarPlanDebug.appliedGesture}</li>
+              <li>规划原因：{avatarPlanDebug.reason}</li>
+              <li>
+                口型时间线：{lipSyncSource} / {lipSyncTimelineInfo}
+              </li>
+              <li>中文测试文本：{CHINESE_PSEUDO_VISEME_DEMO_TEXT}</li>
+              <li style={{ whiteSpace: "normal" }}>
+                拼音分解：{pinyinPseudoBreakdown}
+              </li>
+              {runtime === "talkinghead" && (
+                <li style={{ whiteSpace: "normal" }}>
+                  GLB 口型枚举（{TALKINGHEAD_MOUTH_CHANNELS.length} 项） / 当前激活：{activeMouthChannel}
+                  <br />
+                  {TALKINGHEAD_MOUTH_CHANNELS.map(
+                    (key) => `${key}:${(talkingHeadMouthChannels[key] ?? 0).toFixed(2)}`
+                  ).join(" | ")}
+                </li>
+              )}
+              <li>事件流：{avatarDebugFlow.lastEvent}</li>
+              <li>最近 turnId：{avatarDebugFlow.lastTurnId}</li>
+              <li>llm.done 次数：{avatarDebugFlow.llmDoneCount}</li>
+              <li>lipsync 事件数：{avatarDebugFlow.lipSyncEventCount}</li>
+            </ul>
+          </div>
         </div>
       </section>
     </main>

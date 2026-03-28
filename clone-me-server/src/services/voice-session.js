@@ -5,6 +5,8 @@ import { getHistory, appendRound, searchRelevantMemories } from './memory.js';
 import { retrieve } from './rag.js';
 import { createTTSConnection, startTTSTask, sendTTSText, finishTTSTask } from './tts.js';
 
+const TTS_DEBUG = process.env.TTS_DEBUG === '1';
+
 function inferEmotion(reply) {
   if (/[！!😊🎉👍太好了|恭喜|不错|很棒|开心]/.test(reply)) return 'happy';
   if (/[思考|分析|让我想想|这个问题|首先|其次]/.test(reply)) return 'thinking';
@@ -29,6 +31,55 @@ function extractFirstJsonObject(text) {
   return text.slice(start, end + 1);
 }
 
+function firstAllowed(list, candidates, fallback) {
+  for (const item of candidates) {
+    if (list.includes(item)) return item;
+  }
+  return fallback;
+}
+
+function buildRuleBasedAvatarPlan({ userQuestion, reply, allowedEmotions, allowedGestures }) {
+  const q = (userQuestion || '').toLowerCase();
+  const r = (reply || '').toLowerCase();
+  const merged = `${q}\n${r}`;
+  const hasNegative = /(生气|投诉|不满|差评|退款|故障|失败|问题|抱歉|很遗憾|焦虑|担心)/.test(merged);
+  const hasThinking = /(分析|原因|步骤|首先|其次|建议|排查|方案|解释|如何)/.test(merged);
+  const hasPromo = /(推荐|套餐|优惠|折扣|活动|划算|价格|方案)/.test(merged);
+  const hasPositive = /(太好了|恭喜|成功|完成|没问题|放心|可以|赞|开心)/.test(merged);
+
+  const fallbackEmotion = allowedEmotions[0] || 'neutral';
+  const emotion = hasNegative
+    ? firstAllowed(allowedEmotions, ['serious', 'warm', 'thinking', 'neutral'], fallbackEmotion)
+    : hasPromo
+      ? firstAllowed(allowedEmotions, ['confident', 'excited', 'happy', 'neutral'], fallbackEmotion)
+      : hasThinking
+        ? firstAllowed(allowedEmotions, ['thinking', 'neutral'], fallbackEmotion)
+        : hasPositive
+          ? firstAllowed(allowedEmotions, ['happy', 'warm', 'neutral'], fallbackEmotion)
+          : firstAllowed(allowedEmotions, ['neutral', 'warm', 'happy'], fallbackEmotion);
+
+  const gesturePool = [];
+  if (hasNegative) gesturePool.push('comfortExplain', 'emphasis');
+  if (hasPromo) gesturePool.push('discountHighlight', 'promoPitch', 'emphasis');
+  if (hasThinking) gesturePool.push('thinking', 'nod');
+  if (hasPositive) gesturePool.push('clap', 'openArms', 'nod');
+  gesturePool.push('nod', 'none');
+
+  const gestures = [];
+  for (const candidate of gesturePool) {
+    if (!allowedGestures.includes(candidate)) continue;
+    if (candidate === 'none' && gestures.length > 0) continue;
+    if (!gestures.includes(candidate)) gestures.push(candidate);
+    if (gestures.length >= 2) break;
+  }
+
+  return {
+    emotion,
+    gestures: gestures.length > 0 ? gestures : ['none'],
+    reason: 'rule-based fallback',
+  };
+}
+
 async function planAvatarBehavior({ userQuestion, reply, personaKey, avatarModel }) {
   if (!avatarModel || typeof avatarModel !== 'object') return null;
   const allowedEmotions = normalizeStringList(avatarModel.allowedEmotions, DEFAULT_AVATAR_EMOTIONS);
@@ -49,7 +100,7 @@ async function planAvatarBehavior({ userQuestion, reply, personaKey, avatarModel
       role: 'system',
       content: `当前模型: ${safeModelLabel} (${safeModelKey})\n可用表情: ${allowedEmotions.join(', ')}\n可用动作: ${allowedGestures.join(', ')}\n动作提示: ${JSON.stringify(
         gestureHints
-      )}\n规则:\n1) emotion 必须来自可用表情\n2) gestures 最多 2 个，且必须来自可用动作\n3) 投诉/生气场景优先 serious 或 thinking，再配 emphasis/comfortExplain（若可用）\n4) 若不需要动作，可输出 gestures: ["none"]\n输出格式: {"emotion":"...","gestures":["..."],"reason":"不超过20字"}`,
+      )}\n输出要求:\n1) 必须输出单个 JSON 对象，不要 markdown，不要代码块\n2) emotion 只能从可用表情中选 1 个\n3) gestures 只能从可用动作中选，最多 2 个；若无需动作必须输出 ["none"]\n4) 投诉/生气优先 serious 或 thinking，并优先 comfortExplain/emphasis\n5) 推荐/优惠优先 confident 或 happy，并优先 promoPitch/discountHighlight\n6) reason 使用简短中文，<= 20 字\n请严格按以下格式输出：{"emotion":"neutral","gestures":["none"],"reason":"简短原因"}`,
     },
     {
       role: 'user',
@@ -61,7 +112,9 @@ async function planAvatarBehavior({ userQuestion, reply, personaKey, avatarModel
     const planning = await chat(plannerMessages, { temperature: 0.2, max_tokens: 200 });
     const content = planning?.choices?.[0]?.message?.content || '';
     const jsonString = extractFirstJsonObject(content);
-    if (!jsonString) return null;
+    if (!jsonString) {
+      return buildRuleBasedAvatarPlan({ userQuestion, reply, allowedEmotions, allowedGestures });
+    }
     const parsed = JSON.parse(jsonString);
     const emotion = allowedEmotions.includes(parsed.emotion) ? parsed.emotion : allowedEmotions[0];
     const gesturesRaw = Array.isArray(parsed.gestures) ? parsed.gestures : [];
@@ -80,7 +133,7 @@ async function planAvatarBehavior({ userQuestion, reply, personaKey, avatarModel
     };
   } catch (error) {
     console.warn('[voice-session] avatar-plan 规划失败:', error.message);
-    return null;
+    return buildRuleBasedAvatarPlan({ userQuestion, reply, allowedEmotions, allowedGestures });
   }
 }
 
@@ -185,6 +238,195 @@ function parseSSEChunk(sseBuffer, chunkText, onEvent) {
   return buffer;
 }
 
+function estimateSentenceDurationMs(sentence) {
+  const content = (sentence || '').trim();
+  if (!content) return 220;
+  const noSpaceLength = content.replace(/\s+/g, '').length;
+  const punctuationCount = (content.match(/[，。！？、,.!?;；:：]/g) || []).length;
+  const base = noSpaceLength * 130 + punctuationCount * 80;
+  return Math.max(260, Math.min(4200, base));
+}
+
+function buildWordTimelineFromSentence(sentence, offsetMs = 0) {
+  const cleaned = (sentence || '')
+    .replace(/[，。！？、,.!?;；:："'`“”‘’()[\]{}<>]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const words = cleaned ? cleaned.split(' ') : [];
+  if (words.length === 0) {
+    return {
+      source: 'word',
+      words: [],
+      wtimes: [],
+      wdurations: [],
+      durationMs: 0,
+    };
+  }
+  const estimatedDuration = estimateSentenceDurationMs(sentence);
+  const totalWeight = words.reduce((sum, word) => sum + Math.max(1, word.length), 0);
+  const minWordMs = 85;
+  let cursor = 0;
+  const wtimes = [];
+  const wdurations = [];
+  words.forEach((word, index) => {
+    const weight = Math.max(1, word.length);
+    const remaining = Math.max(0, estimatedDuration - cursor);
+    const proportional =
+      index === words.length - 1 ? remaining : (estimatedDuration * weight) / Math.max(1, totalWeight);
+    const duration = Math.max(minWordMs, Math.min(remaining || minWordMs, proportional));
+    wtimes.push(Math.round(offsetMs + cursor));
+    wdurations.push(Math.round(duration));
+    cursor += duration;
+  });
+  return {
+    source: 'word',
+    words,
+    wtimes,
+    wdurations,
+    durationMs: Math.round(cursor),
+  };
+}
+
+function asNumberArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => Number(item)).filter((item) => Number.isFinite(item));
+}
+
+function asStringArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim());
+}
+
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    if (Array.isArray(value) && value.length > 0) return value;
+  }
+  return [];
+}
+
+function extractProviderLipSyncTimeline(message) {
+  const visemesRaw = firstNonEmpty(
+    message?.visemes,
+    message?.result?.visemes,
+    message?.payload?.result?.visemes,
+    message?.payload?.output?.visemes,
+    message?.output?.visemes
+  );
+  const visemes = asStringArray(visemesRaw);
+  if (visemes.length > 0) {
+    const vtimes = asNumberArray(
+      firstNonEmpty(
+        message?.vtimes,
+        message?.timestamps,
+        message?.result?.vtimes,
+        message?.result?.timestamps,
+        message?.payload?.result?.vtimes,
+        message?.payload?.result?.timestamps,
+        message?.payload?.output?.vtimes,
+        message?.payload?.output?.timestamps,
+        message?.output?.vtimes,
+        message?.output?.timestamps
+      )
+    );
+    const vdurationsRaw = asNumberArray(
+      firstNonEmpty(
+        message?.vdurations,
+        message?.durations,
+        message?.result?.vdurations,
+        message?.result?.durations,
+        message?.payload?.result?.vdurations,
+        message?.payload?.result?.durations,
+        message?.payload?.output?.vdurations,
+        message?.payload?.output?.durations,
+        message?.output?.vdurations,
+        message?.output?.durations
+      )
+    );
+    const alignedTimes = vtimes.length === visemes.length ? vtimes : visemes.map((_, index) => index * 80);
+    const alignedDurations =
+      vdurationsRaw.length === visemes.length ? vdurationsRaw : visemes.map(() => 80);
+    return {
+      source: 'viseme',
+      visemes,
+      vtimes: alignedTimes,
+      vdurations: alignedDurations,
+    };
+  }
+
+  const words = asStringArray(
+    firstNonEmpty(
+      message?.words,
+      message?.result?.words,
+      message?.payload?.result?.words,
+      message?.payload?.output?.words,
+      message?.output?.words
+    )
+  );
+  if (words.length > 0) {
+    const wtimes = asNumberArray(
+      firstNonEmpty(
+        message?.wtimes,
+        message?.result?.wtimes,
+        message?.payload?.result?.wtimes,
+        message?.payload?.output?.wtimes,
+        message?.output?.wtimes
+      )
+    );
+    const wdurations = asNumberArray(
+      firstNonEmpty(
+        message?.wdurations,
+        message?.result?.wdurations,
+        message?.payload?.result?.wdurations,
+        message?.payload?.output?.wdurations,
+        message?.output?.wdurations
+      )
+    );
+    if (wtimes.length === words.length && wdurations.length === words.length) {
+      return {
+        source: 'word',
+        words,
+        wtimes,
+        wdurations,
+      };
+    }
+  }
+  return null;
+}
+
+function debugTTSPayload(message, providerTimeline) {
+  if (!TTS_DEBUG || !message || typeof message !== 'object') return;
+  const payload = message;
+  const headerEvent = payload?.header?.event;
+  const timelineSummary = providerTimeline
+    ? providerTimeline.source === 'viseme'
+      ? {
+          source: 'viseme',
+          visemeCount: providerTimeline.visemes?.length ?? 0,
+          hasVtimes: Array.isArray(providerTimeline.vtimes),
+          hasVdurations: Array.isArray(providerTimeline.vdurations),
+        }
+      : {
+          source: 'word',
+          wordCount: providerTimeline.words?.length ?? 0,
+          hasWtimes: Array.isArray(providerTimeline.wtimes),
+          hasWdurations: Array.isArray(providerTimeline.wdurations),
+        }
+    : null;
+  const directFields = {
+    hasPhonemes: Array.isArray(payload?.phonemes),
+    hasVisemes: Array.isArray(payload?.visemes),
+    hasWords: Array.isArray(payload?.words),
+    hasVtimes: Array.isArray(payload?.vtimes) || Array.isArray(payload?.timestamps),
+    hasWtimes: Array.isArray(payload?.wtimes),
+  };
+  console.log('[TTS_DEBUG] upstream json', {
+    headerEvent: headerEvent || null,
+    keys: Object.keys(payload).slice(0, 20),
+    directFields,
+    timelineSummary,
+  });
+}
+
 export function attachVoiceSession(clientWs) {
   const state = {
     sessionId: `voice_${Date.now()}`,
@@ -195,6 +437,11 @@ export function attachVoiceSession(clientWs) {
     turnId: 0,
     activeTurnId: 0,
     destroyed: false,
+    partialText: '',
+    partialUpdatedAt: 0,
+    partialTimer: null,
+    lastCommittedText: '',
+    lastCommittedAt: 0,
   };
 
   const asrUpstream = createASRConnection();
@@ -204,6 +451,8 @@ export function attachVoiceSession(clientWs) {
   let ttsCurrentVoice = null;
   let ttsReadyResolvers = [];
   let pendingSentences = [];
+  let ttsTimelineCursorMs = 0;
+  let lastProviderLipSyncKey = '';
   let sseTurnToken = 0;
 
   function sendJson(payload) {
@@ -220,6 +469,8 @@ export function attachVoiceSession(clientWs) {
 
   function resetTTSConnection() {
     pendingSentences = [];
+    ttsTimelineCursorMs = 0;
+    lastProviderLipSyncKey = '';
     ttsReadyResolvers = [];
     if (ttsUpstream && ttsUpstream.readyState === 1) {
       try {
@@ -269,6 +520,19 @@ export function attachVoiceSession(clientWs) {
             sendJson({ type: 'tts.done', turnId: state.activeTurnId });
             return;
           }
+          const providerTimeline = extractProviderLipSyncTimeline(msg);
+          debugTTSPayload(msg, providerTimeline);
+          if (providerTimeline && state.activeTurnId > 0) {
+            const signature = JSON.stringify(providerTimeline).slice(0, 600);
+            if (signature !== lastProviderLipSyncKey) {
+              lastProviderLipSyncKey = signature;
+              sendJson({
+                type: 'tts.lipsync',
+                turnId: state.activeTurnId,
+                ...providerTimeline,
+              });
+            }
+          }
         } catch {
           // parse failed, fallback to binary forwarding
         }
@@ -313,16 +577,77 @@ export function attachVoiceSession(clientWs) {
   }
 
   function interruptCurrentTurn() {
+    const previousTurnId = state.activeTurnId;
     sseTurnToken += 1;
     state.activeTurnId = 0;
     resetTTSConnection();
-    sendJson({ type: 'turn.interrupted' });
+    sendJson({ type: 'turn.interrupted', turnId: previousTurnId });
+  }
+
+  function pushTTSLipSyncSentence(sentence, turnId) {
+    const timeline = buildWordTimelineFromSentence(sentence, ttsTimelineCursorMs);
+    ttsTimelineCursorMs += timeline.durationMs;
+    sendJson({
+      type: 'tts.lipsync',
+      turnId,
+      source: timeline.source,
+      words: timeline.words,
+      wtimes: timeline.wtimes,
+      wdurations: timeline.wdurations,
+      text: sentence,
+    });
+  }
+
+  function clearPartialTimer() {
+    if (state.partialTimer) {
+      clearTimeout(state.partialTimer);
+      state.partialTimer = null;
+    }
+  }
+
+  function shouldSkipDuplicateCommit(text) {
+    const now = Date.now();
+    if (!state.lastCommittedText) return false;
+    return state.lastCommittedText === text && now - state.lastCommittedAt < 1500;
+  }
+
+  function commitRecognizedText(text, source = 'asr.final') {
+    const safeText = (text || '').trim();
+    if (!safeText) return;
+    if (shouldSkipDuplicateCommit(safeText)) return;
+
+    state.lastCommittedText = safeText;
+    state.lastCommittedAt = Date.now();
+    state.partialText = '';
+    state.partialUpdatedAt = 0;
+    clearPartialTimer();
+
+    sendJson({ type: 'asr.final', text: safeText, source });
+    interruptCurrentTurn();
+    void streamAssistantReply(safeText);
+  }
+
+  function schedulePartialCommit() {
+    clearPartialTimer();
+    state.partialTimer = setTimeout(() => {
+      const idleMs = Date.now() - state.partialUpdatedAt;
+      if (!state.partialText) {
+        clearPartialTimer();
+        return;
+      }
+      if (idleMs < 900) {
+        schedulePartialCommit();
+        return;
+      }
+      commitRecognizedText(state.partialText, 'vad.timeout');
+    }, 320);
   }
 
   async function streamAssistantReply(userQuestion) {
     state.turnId += 1;
     const currentTurnId = state.turnId;
     state.activeTurnId = currentTurnId;
+    ttsTimelineCursorMs = 0;
     const myToken = ++sseTurnToken;
 
     sendJson({ type: 'turn.started', turnId: currentTurnId });
@@ -365,6 +690,7 @@ export function attachVoiceSession(clientWs) {
       const sentenceEmitter = createSentenceEmitter((sentence) => {
         if (myToken !== sseTurnToken) return;
         if (!sentence) return;
+        pushTTSLipSyncSentence(sentence, currentTurnId);
         if (!ttsTaskStarted) {
           pendingSentences.push(sentence);
           return;
@@ -446,12 +772,13 @@ export function attachVoiceSession(clientWs) {
     if (!text) return;
 
     if (isAsrFinal(payload)) {
-      sendJson({ type: 'asr.final', text });
-      interruptCurrentTurn();
-      void streamAssistantReply(text);
+      commitRecognizedText(text, 'asr.final');
       return;
     }
+    state.partialText = text;
+    state.partialUpdatedAt = Date.now();
     sendJson({ type: 'asr.partial', text });
+    schedulePartialCommit();
   });
 
   asrUpstream.on('error', (err) => {
@@ -498,9 +825,7 @@ export function attachVoiceSession(clientWs) {
       }
 
       if (action === 'text' && typeof msg.text === 'string' && msg.text.trim()) {
-        interruptCurrentTurn();
-        sendJson({ type: 'asr.final', text: msg.text.trim(), mock: true });
-        void streamAssistantReply(msg.text.trim());
+        commitRecognizedText(msg.text.trim(), 'text.input');
         return;
       }
     } catch {
@@ -510,6 +835,7 @@ export function attachVoiceSession(clientWs) {
 
   clientWs.on('close', () => {
     state.destroyed = true;
+    clearPartialTimer();
     interruptCurrentTurn();
     if (asrUpstream.readyState === 1) {
       asrUpstream.close();

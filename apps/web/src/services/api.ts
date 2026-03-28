@@ -1,4 +1,5 @@
 import type { AvatarEmotion } from "../avatar/live2dAdapter";
+import type { LipSyncTimeline } from "../avatar/lipSyncTimeline";
 
 export type PersonaMode = "teacher" | "friend" | "support";
 
@@ -25,6 +26,7 @@ export interface SmartChatResponse {
   };
   audioUrl: string;
   phonemeCues: number[];
+  lipSyncTimeline?: LipSyncTimeline;
   sessionId: string;
   persona: string;
 }
@@ -366,6 +368,7 @@ export async function smartChat(payload: {
             avatarPlan: parsed.avatarPlan,
             audioUrl: parsed.audioUrl ?? "",
             phonemeCues: parsed.phonemeCues ?? [],
+            lipSyncTimeline: parsed.lipSyncTimeline,
             sessionId: parsed.sessionId,
             persona: parsed.persona,
           };
@@ -386,6 +389,7 @@ export async function smartChat(payload: {
       avatarPlan: undefined,
       audioUrl: "",
       phonemeCues: [],
+      lipSyncTimeline: undefined,
       sessionId: payload.sessionId ?? "default",
       persona: payload.persona ?? "general",
     };

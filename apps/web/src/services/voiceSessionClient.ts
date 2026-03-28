@@ -1,3 +1,4 @@
+import type { LipSyncTimeline } from "../avatar/lipSyncTimeline";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3001";
 const WS_URL = API_BASE_URL.replace(/^http/, "ws") + "/ws/voice-session";
 
@@ -32,6 +33,12 @@ export interface VoiceSessionDoneEvent {
   persona: string;
 }
 
+export interface VoiceSessionLipSyncEvent {
+  turnId: number;
+  timeline: LipSyncTimeline;
+  text?: string;
+}
+
 interface VoiceSessionClientOptions {
   voiceId?: string;
   onSpeakingChange?: OnSpeakingChange;
@@ -40,6 +47,8 @@ interface VoiceSessionClientOptions {
   onAsrFinal?: (text: string) => void;
   onLlmDelta?: (text: string) => void;
   onLlmDone?: (event: VoiceSessionDoneEvent) => void;
+  onLipSyncTimeline?: (event: VoiceSessionLipSyncEvent) => void;
+  onConnectionChange?: (connected: boolean) => void;
 }
 
 const readEnvNumber = (raw: unknown, fallback: number, min: number, max: number) => {
@@ -62,6 +71,8 @@ export class VoiceSessionClient {
   private onAsrFinal?: (text: string) => void;
   private onLlmDelta?: (text: string) => void;
   private onLlmDone?: (event: VoiceSessionDoneEvent) => void;
+  private onLipSyncTimeline?: (event: VoiceSessionLipSyncEvent) => void;
+  private onConnectionChange?: (connected: boolean) => void;
   private mediaRecorder: MediaRecorder | null = null;
   private micStream: MediaStream | null = null;
   private audioQueue: ArrayBuffer[] = [];
@@ -72,6 +83,12 @@ export class VoiceSessionClient {
   private currentSource: AudioBufferSourceNode | null = null;
   private mouthAnimTimer: ReturnType<typeof setInterval> | null = null;
   private smoothedMouthOpen = 0;
+  private lastStartOptions: VoiceSessionStartOptions | null = null;
+  private shouldRecord = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempts = 0;
+  private manualDisconnect = false;
+  private activeTurnId = 0;
 
   constructor(options: VoiceSessionClientOptions = {}) {
     this.voiceId = options.voiceId;
@@ -81,6 +98,8 @@ export class VoiceSessionClient {
     this.onAsrFinal = options.onAsrFinal;
     this.onLlmDelta = options.onLlmDelta;
     this.onLlmDone = options.onLlmDone;
+    this.onLipSyncTimeline = options.onLipSyncTimeline;
+    this.onConnectionChange = options.onConnectionChange;
   }
 
   connect(): Promise<void> {
@@ -89,12 +108,27 @@ export class VoiceSessionClient {
         resolve();
         return;
       }
+      this.manualDisconnect = false;
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
 
       this.ws = new WebSocket(WS_URL);
       this.ws.binaryType = "arraybuffer";
 
       this.ws.onopen = () => {
         this.connected = true;
+        this.reconnectAttempts = 0;
+        this.onConnectionChange?.(true);
+        if (this.lastStartOptions) {
+          this.startSession(this.lastStartOptions);
+        }
+        if (this.shouldRecord) {
+          void this.startRecording().catch(() => {
+            // ignore auto resume error
+          });
+        }
         resolve();
       };
 
@@ -112,11 +146,16 @@ export class VoiceSessionClient {
 
       this.ws.onerror = () => {
         this.connected = false;
+        this.onConnectionChange?.(false);
         reject(new Error("Voice session 连接失败"));
       };
 
       this.ws.onclose = () => {
         this.connected = false;
+        this.onConnectionChange?.(false);
+        if (!this.manualDisconnect) {
+          this.scheduleReconnect();
+        }
       };
 
       setTimeout(() => {
@@ -128,6 +167,7 @@ export class VoiceSessionClient {
   }
 
   startSession(options: VoiceSessionStartOptions) {
+    this.lastStartOptions = options;
     if (!this.connected || this.ws?.readyState !== WebSocket.OPEN) {
       throw new Error("Voice session 未连接");
     }
@@ -141,6 +181,7 @@ export class VoiceSessionClient {
   }
 
   async startRecording() {
+    this.shouldRecord = true;
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error("Voice session 未连接");
     }
@@ -164,6 +205,7 @@ export class VoiceSessionClient {
   }
 
   stopRecording() {
+    this.shouldRecord = false;
     if (this.mediaRecorder && this.mediaRecorder.state === "recording") {
       this.mediaRecorder.stop();
     }
@@ -179,6 +221,7 @@ export class VoiceSessionClient {
       this.ws.send(JSON.stringify({ type: "interrupt" }));
     }
     this.stopPlayback();
+    this.activeTurnId = 0;
   }
 
   setVoiceId(voiceId: string | undefined) {
@@ -186,6 +229,11 @@ export class VoiceSessionClient {
   }
 
   disconnect() {
+    this.manualDisconnect = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.stopRecording();
     this.stopPlayback();
     if (this.ws) {
@@ -193,6 +241,7 @@ export class VoiceSessionClient {
       this.ws = null;
     }
     this.connected = false;
+    this.onConnectionChange?.(false);
     if (this.audioContext) {
       this.audioContext.close();
       this.audioContext = null;
@@ -200,6 +249,19 @@ export class VoiceSessionClient {
     this.analyser = null;
     this.analyserData = null;
     this.smoothedMouthOpen = 0;
+    this.activeTurnId = 0;
+  }
+
+  private scheduleReconnect() {
+    if (this.reconnectTimer || this.manualDisconnect) return;
+    const delay = Math.min(4000, 500 * 2 ** Math.min(this.reconnectAttempts, 3));
+    this.reconnectAttempts += 1;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.connect().catch(() => {
+        this.scheduleReconnect();
+      });
+    }, delay);
   }
 
   private handleJsonMessage(raw: string) {
@@ -211,6 +273,15 @@ export class VoiceSessionClient {
     }
 
     const type = typeof msg.type === "string" ? msg.type : "";
+    if (type === "turn.started") {
+      this.activeTurnId = Number(msg.turnId ?? 0);
+      return;
+    }
+    if (type === "turn.interrupted") {
+      this.activeTurnId = 0;
+      this.stopPlayback();
+      return;
+    }
     if (type === "asr.partial" && typeof msg.text === "string") {
       this.onAsrPartial?.(msg.text);
       return;
@@ -220,12 +291,61 @@ export class VoiceSessionClient {
       return;
     }
     if (type === "llm.delta" && typeof msg.text === "string") {
+      const turnId = Number(msg.turnId ?? 0);
+      if (this.activeTurnId > 0 && turnId > 0 && turnId !== this.activeTurnId) {
+        return;
+      }
       this.onLlmDelta?.(msg.text);
       return;
     }
+    if (type === "tts.lipsync") {
+      const turnId = Number(msg.turnId ?? 0);
+      if (this.activeTurnId > 0 && turnId > 0 && turnId !== this.activeTurnId) {
+        return;
+      }
+      const source = typeof msg.source === "string" ? msg.source : "";
+      if (
+        source === "viseme" &&
+        Array.isArray(msg.visemes) &&
+        Array.isArray(msg.vtimes) &&
+        Array.isArray(msg.vdurations)
+      ) {
+        this.onLipSyncTimeline?.({
+          turnId,
+          timeline: {
+            source: "viseme",
+            visemes: msg.visemes.filter((item): item is string => typeof item === "string"),
+            vtimes: msg.vtimes.map((item) => Number(item) || 0),
+            vdurations: msg.vdurations.map((item) => Number(item) || 0),
+          },
+          text: typeof msg.text === "string" ? msg.text : undefined,
+        });
+      } else if (
+        (source === "word" || source === "heuristic") &&
+        Array.isArray(msg.words) &&
+        Array.isArray(msg.wtimes) &&
+        Array.isArray(msg.wdurations)
+      ) {
+        this.onLipSyncTimeline?.({
+          turnId,
+          timeline: {
+            source,
+            words: msg.words.filter((item): item is string => typeof item === "string"),
+            wtimes: msg.wtimes.map((item) => Number(item) || 0),
+            wdurations: msg.wdurations.map((item) => Number(item) || 0),
+          },
+          text: typeof msg.text === "string" ? msg.text : undefined,
+        });
+      }
+      return;
+    }
     if (type === "llm.done") {
+      const turnId = Number(msg.turnId ?? 0);
+      if (this.activeTurnId > 0 && turnId > 0 && turnId !== this.activeTurnId) {
+        return;
+      }
       this.onLlmDone?.({
-        turnId: Number(msg.turnId ?? 0),
+        turnId,
         reply: typeof msg.reply === "string" ? msg.reply : "",
         references: Array.isArray(msg.references) ? (msg.references as string[]) : [],
         emotion: typeof msg.emotion === "string" ? msg.emotion : "neutral",
@@ -233,6 +353,7 @@ export class VoiceSessionClient {
         sessionId: typeof msg.sessionId === "string" ? msg.sessionId : "",
         persona: typeof msg.persona === "string" ? msg.persona : "",
       });
+      this.activeTurnId = 0;
     }
   }
 

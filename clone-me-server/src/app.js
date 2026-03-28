@@ -22,6 +22,7 @@ import uploadRouter from './routes/upload.js';
 import smartChatRouter from './routes/smart-chat.js';
 import { initPersonas } from './services/persona.js';
 
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));

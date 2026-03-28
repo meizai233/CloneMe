@@ -9,7 +9,7 @@ export type AvatarEmotion =
   | "warm"
   | "serious"
   | "surprised";
-export type AvatarRuntime = "live2d" | "mock";
+export type AvatarRuntime = "live2d" | "talkinghead" | "mock";
 export type AvatarGesture =
   | "none"
   | "nod"
@@ -50,6 +50,13 @@ export interface Live2DDriver {
   setMouthOpen(value: number): void;
   setSpeaking(speaking: boolean): void;
   playLipSync(cues: number[]): () => void;
+  runMouthShapeTest?(): void;
+  runVowelMouthTest?(): void;
+  runTalkingMouthTest?(): void;
+  runFullMouthChannelSweep?(): void;
+  runChinesePseudoVisemeSequence?(visemes: string[], stepMs?: number): void;
+  runGestureShowcase?(): void;
+  interruptSpeech?(): void;
   destroy(): void;
 }
 
@@ -594,6 +601,81 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
       }, 90);
 
       return stopLipSync;
+    },
+    runMouthShapeTest() {
+      const demo = [0.08, 0.18, 0.35, 0.65, 0.9, 0.55, 0.25, 0.05];
+      let index = 0;
+      stopLipSync();
+      state.speaking = true;
+      emit();
+      timer = setInterval(() => {
+        state.mouthOpen = demo[index] ?? 0;
+        applyMouthOpenToModel(state.mouthOpen);
+        emit();
+        index += 1;
+        if (index >= demo.length) {
+          stopLipSync();
+          state.speaking = false;
+          emit();
+        }
+      }, 220);
+    },
+    runVowelMouthTest() {
+      stopLipSync();
+      state.speaking = true;
+      emit();
+      const vowels = [0.78, 0.46, 0.34, 0.62, 0.52, 0.18];
+      let index = 0;
+      timer = setInterval(() => {
+        state.mouthOpen = vowels[index] ?? 0;
+        applyMouthOpenToModel(state.mouthOpen);
+        emit();
+        index += 1;
+        if (index >= vowels.length) {
+          stopLipSync();
+          state.speaking = false;
+          emit();
+        }
+      }, 300);
+    },
+    runTalkingMouthTest() {
+      stopLipSync();
+      state.speaking = true;
+      emit();
+      const scriptLikeCues = [0.06, 0.22, 0.48, 0.18, 0.65, 0.12, 0.38, 0.71, 0.2, 0.44, 0.08, 0.31, 0.58, 0.14];
+      let index = 0;
+      timer = setInterval(() => {
+        state.mouthOpen = scriptLikeCues[index] ?? 0;
+        applyMouthOpenToModel(state.mouthOpen);
+        emit();
+        index += 1;
+        if (index >= scriptLikeCues.length) {
+          stopLipSync();
+          state.speaking = false;
+          emit();
+        }
+      }, 130);
+    },
+    runGestureShowcase() {
+      const sequence: Array<Exclude<AvatarGesture, "none">> = [
+        "nod",
+        "emphasis",
+        "thinking",
+        "openArms",
+        "promoPitch",
+        "comfortExplain",
+        "clap",
+      ];
+      sequence.forEach((gesture, idx) => {
+        setTimeout(() => {
+          if (!live2dModel) return;
+          const profile = live2dGestureProfiles[gesture];
+          if (!profile) return;
+          if (typeof profile.motionIndex === "number") {
+            playModelMotion(profile.motionIndex);
+          }
+        }, idx * 900);
+      });
     },
     destroy() {
       initToken += 1;

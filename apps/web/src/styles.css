@@ -258,6 +258,12 @@ button:disabled {
   background-repeat: no-repeat;
 }
 
+.avatar-stage-talkinghead {
+  background-image:
+    linear-gradient(180deg, rgba(8, 14, 36, 0.24), rgba(8, 14, 36, 0.6)),
+    radial-gradient(circle at 50% 20%, rgba(120, 205, 255, 0.16), rgba(120, 205, 255, 0) 56%);
+}
+
 .avatar-stage::before {
   content: "";
   position: absolute;
@@ -303,6 +309,10 @@ button:disabled {
   border-radius: 0;
 }
 
+.avatar-stage-preview-fullscreen .avatar-talkinghead-host canvas {
+  border-radius: 0;
+}
+
 .avatar-stage-preview-fullscreen::after {
   content: "按 Esc 退出全屏";
   position: absolute;
@@ -331,6 +341,18 @@ button:disabled {
 }
 
 .avatar-canvas.visible {
+  display: block;
+}
+
+.avatar-talkinghead-host {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+}
+
+.avatar-talkinghead-host canvas {
+  width: 100% !important;
+  height: 100% !important;
   display: block;
 }
 

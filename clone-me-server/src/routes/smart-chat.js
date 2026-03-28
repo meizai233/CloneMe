@@ -27,6 +27,53 @@ function generatePhonemeCues(text) {
   });
 }
 
+function estimateSentenceDurationMs(sentence) {
+  const content = (sentence || '').trim();
+  if (!content) return 220;
+  const noSpaceLength = content.replace(/\s+/g, '').length;
+  const punctuationCount = (content.match(/[，。！？、,.!?;；:：]/g) || []).length;
+  const base = noSpaceLength * 130 + punctuationCount * 80;
+  return Math.max(260, Math.min(4200, base));
+}
+
+function buildWordTimelineFromText(text, offsetMs = 0) {
+  const cleaned = (text || '')
+    .replace(/[，。！？、,.!?;；:："'`“”‘’()[\]{}<>]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const words = cleaned ? cleaned.split(' ') : [];
+  if (words.length === 0) {
+    return {
+      source: 'word',
+      words: [],
+      wtimes: [],
+      wdurations: [],
+    };
+  }
+  const durationMs = estimateSentenceDurationMs(text);
+  const totalWeight = words.reduce((sum, word) => sum + Math.max(1, word.length), 0);
+  const minWordMs = 85;
+  let cursor = 0;
+  const wtimes = [];
+  const wdurations = [];
+  words.forEach((word, index) => {
+    const weight = Math.max(1, word.length);
+    const remaining = Math.max(0, durationMs - cursor);
+    const proportional =
+      index === words.length - 1 ? remaining : (durationMs * weight) / Math.max(1, totalWeight);
+    const duration = Math.max(minWordMs, Math.min(remaining || minWordMs, proportional));
+    wtimes.push(Math.round(offsetMs + cursor));
+    wdurations.push(Math.round(duration));
+    cursor += duration;
+  });
+  return {
+    source: 'word',
+    words,
+    wtimes,
+    wdurations,
+  };
+}
+
 const DEFAULT_AVATAR_EMOTIONS = ['neutral', 'happy', 'thinking', 'serious', 'warm', 'confident'];
 const DEFAULT_AVATAR_GESTURES = ['none', 'nod', 'emphasis', 'thinking'];
 
@@ -66,7 +113,7 @@ async function planAvatarBehavior({ userQuestion, reply, personaKey, avatarModel
       role: 'system',
       content: `当前模型: ${safeModelLabel} (${safeModelKey})\n可用表情: ${allowedEmotions.join(', ')}\n可用动作: ${allowedGestures.join(', ')}\n动作提示: ${JSON.stringify(
         gestureHints
-      )}\n规则:\n1) emotion 必须来自可用表情\n2) gestures 最多 2 个，且必须来自可用动作\n3) 投诉/生气场景优先 serious 或 thinking，再配 emphasis/comfortExplain（若可用）\n4) 若不需要动作，可输出 gestures: ["none"]\n输出格式: {"emotion":"...","gestures":["..."],"reason":"不超过20字"}`,
+      )}\n输出要求:\n1) 必须输出单个 JSON 对象，不要 markdown，不要代码块\n2) emotion 只能从可用表情中选 1 个\n3) gestures 只能从可用动作中选，最多 2 个；若无需动作必须输出 ["none"]\n4) 投诉/生气优先 serious 或 thinking，并优先 comfortExplain/emphasis\n5) 推荐/优惠优先 confident 或 happy，并优先 promoPitch/discountHighlight\n6) reason 使用简短中文，<= 20 字\n请严格按以下格式输出：{"emotion":"neutral","gestures":["none"],"reason":"简短原因"}`,
     },
     {
       role: 'user',
@@ -246,6 +293,7 @@ router.post('/smart', async (req, res) => {
       avatarPlan,
       audioUrl: '',
       phonemeCues: generatePhonemeCues(fullReply),
+      lipSyncTimeline: buildWordTimelineFromText(fullReply),
       sessionId,
       persona: personaKey || getDefaultPersonaKey(),
     })}\n\n`);

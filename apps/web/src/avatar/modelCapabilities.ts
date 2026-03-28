@@ -18,6 +18,17 @@ const ALL_EMOTIONS: AvatarEmotion[] = [
   "serious",
   "surprised",
 ];
+const ALL_GESTURES: AvatarGesture[] = [
+  "none",
+  "nod",
+  "emphasis",
+  "thinking",
+  "clap",
+  "openArms",
+  "promoPitch",
+  "discountHighlight",
+  "comfortExplain",
+];
 
 const HARU_CAPABILITY: AvatarModelCapability = {
   modelKey: "haru_greeter_pro_jp",
@@ -69,9 +80,43 @@ const NATORI_CAPABILITY: AvatarModelCapability = {
   },
 };
 
+const TALKINGHEAD_BRUNETTE_CAPABILITY: AvatarModelCapability = {
+  modelKey: "talkinghead_brunette_glb",
+  modelLabel: "TalkingHead Brunette",
+  allowedEmotions: ALL_EMOTIONS,
+  allowedGestures: ALL_GESTURES,
+  gestureHints: {
+    nod: "轻微确认，适合承接用户输入。",
+    emphasis: "重点强调，适合关键规则说明。",
+    thinking: "解释复杂问题时使用，节奏更缓。",
+    clap: "表达正向反馈，避免高频连续触发。",
+    openArms: "欢迎或引导场景，动作幅度较大。",
+    promoPitch: "讲解方案与推荐时使用。",
+    discountHighlight: "突出优惠、价格、时效信息。",
+    comfortExplain: "投诉或负向情绪下优先安抚解释。",
+  },
+};
+
+const TALKINGHEAD_AVATURN_CAPABILITY: AvatarModelCapability = {
+  modelKey: "talkinghead_avaturn_glb",
+  modelLabel: "TalkingHead Avaturn",
+  allowedEmotions: ALL_EMOTIONS,
+  allowedGestures: ALL_GESTURES,
+  gestureHints: {
+    nod: "默认确认动作，适合多数问答回合。",
+    emphasis: "用于步骤和结论强调。",
+    thinking: "用于分析型回答和推理场景。",
+    clap: "结果达成/成功消息时使用。",
+    openArms: "欢迎、引导、总结收尾时使用。",
+    promoPitch: "推荐套餐、方案时使用。",
+    discountHighlight: "优惠点和卖点强化。",
+    comfortExplain: "投诉、焦虑语气下优先。",
+  },
+};
+
 const DEFAULT_CAPABILITY: AvatarModelCapability = {
-  modelKey: "generic_live2d",
-  modelLabel: "Generic Live2D",
+  modelKey: "generic_avatar",
+  modelLabel: "Generic Avatar",
   allowedEmotions: ALL_EMOTIONS,
   allowedGestures: ["none", "nod", "emphasis", "thinking"],
   gestureHints: {
@@ -83,6 +128,8 @@ const DEFAULT_CAPABILITY: AvatarModelCapability = {
 
 export function resolveAvatarModelCapability(modelUrl: string): AvatarModelCapability {
   const normalized = modelUrl.toLowerCase();
+  if (normalized.includes("talkinghead/avaturn.glb")) return TALKINGHEAD_AVATURN_CAPABILITY;
+  if (normalized.includes("talkinghead/brunette.glb")) return TALKINGHEAD_BRUNETTE_CAPABILITY;
   if (normalized.includes("natori_pro_zh")) return NATORI_CAPABILITY;
   if (normalized.includes("haru_greeter_pro_jp")) return HARU_CAPABILITY;
   return DEFAULT_CAPABILITY;
