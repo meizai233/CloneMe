@@ -81,7 +81,8 @@ export interface VoiceCloneDeleteResponse {
   requestId: string;
 }
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3001";
+const envApiBase = (import.meta.env.VITE_API_BASE_URL ?? "").trim();
+const API_BASE_URL = envApiBase || `${window.location.protocol}//${window.location.hostname}:3001`;
 const REQUEST_TIMEOUT_MS = 300000;
 
 class ApiError extends Error {
@@ -279,6 +280,16 @@ export interface UploadAudioResponse {
   size: number;
 }
 
+interface EmbeddingItem {
+  embedding?: number[];
+}
+
+interface EmbeddingResponse {
+  data?: EmbeddingItem[];
+  error?: string;
+  message?: string;
+}
+
 /**
  * 上传录音文件到后端，返回可访问的 URL
  */
@@ -294,6 +305,25 @@ export async function uploadAudio(audioData: string, filename?: string): Promise
  */
 export function getUploadUrl(path: string): string {
   return joinUrl(API_BASE_URL, path);
+}
+
+/**
+ * 调用后端 Embedding 接口（支持单条或批量）
+ */
+export async function embedTexts(input: string | string[]): Promise<number[][]> {
+  const payload = { input };
+  const data = await requestJson<EmbeddingResponse, typeof payload>("/api/embedding", payload);
+  const vectors = Array.isArray(data.data)
+    ? data.data
+      .map((item) => (Array.isArray(item?.embedding) ? item.embedding : null))
+      .filter((vector): vector is number[] => Array.isArray(vector))
+    : [];
+
+  if (vectors.length === 0) {
+    throw new ApiError(data.error ?? data.message ?? "向量检索失败");
+  }
+
+  return vectors;
 }
 
 /**

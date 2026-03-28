@@ -65,8 +65,8 @@ export function createLive2DAdapter(options: CreateLive2DAdapterOptions = {}): L
   const viewportFit = {
     widthRatio: 0.78,
     heightRatio: 0.86,
-    centerXRatio: 0.3,
-    baselineYRatio: 0.54,
+    centerXRatio: 0.55,
+    baselineYRatio: 0.84,
     // Live2D bounds often include large transparent margins.
     // Use a slightly right-shifted focus point inside bounds so visible body stays centered.
     focalXRatio: 0.68,

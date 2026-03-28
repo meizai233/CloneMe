@@ -1,3 +1,5 @@
+@import "tailwindcss";
+
 :root {
   font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
   color: #e7ebff;
@@ -133,7 +135,10 @@ select {
   padding: 10px;
 }
 
-button {
+/* 对话页面内的按钮样式（不影响管理平台页面） */
+.panel button,
+.voice-clone-box button,
+.error-box button {
   margin-right: 8px;
   margin-bottom: 10px;
   border: 1px solid #5062b8;
@@ -144,12 +149,14 @@ button {
   cursor: pointer;
 }
 
-button.active {
+.panel button.active,
+.voice-clone-box button.active {
   border-color: #90a4ff;
   background: #4059d4;
 }
 
-button:disabled {
+.panel button:disabled,
+.voice-clone-box button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }
@@ -166,34 +173,265 @@ button:disabled {
   padding: 12px;
 }
 
-.question-guide-box {
-  margin: 10px 0 12px;
-  border: 1px dashed #4459ab;
-  border-radius: 12px;
-  background: #10183b;
-  padding: 12px;
+.custom-dropdown {
+  position: relative;
 }
 
-.question-guide-box h3 {
-  margin: 0 0 6px;
-  font-size: 15px;
+.custom-dropdown-trigger {
+  margin: 0 !important;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-radius: 10px !important;
+  border: 1px solid #3d4f9f !important;
+  background: #0d1536 !important;
+  color: #f4f6ff !important;
+  padding: 10px !important;
 }
 
-.question-guide-box p {
-  margin: 0;
-  color: #c8d4ff;
-  font-size: 13px;
-  line-height: 1.6;
+.custom-dropdown-trigger.is-open {
+  border-color: #6f8bff !important;
 }
 
-.question-guide-placeholder {
-  margin-top: 6px !important;
+.custom-dropdown-trigger-input {
+  padding: 0 !important;
+}
+
+.custom-dropdown-input {
+  width: 100%;
+  border: 0 !important;
+  border-radius: 10px !important;
+  background: transparent !important;
+  color: #f4f6ff !important;
+  padding: 10px !important;
+}
+
+.custom-dropdown-input:focus {
+  outline: none;
+}
+
+.custom-dropdown-arrow-button {
+  margin: 0 !important;
+  border: 0 !important;
+  border-left: 1px solid #33458d !important;
+  border-radius: 0 10px 10px 0 !important;
+  background: transparent !important;
   color: #9fb2fb !important;
+  padding: 8px 10px !important;
+}
+
+.custom-dropdown-placeholder {
+  color: #93a8ee;
+}
+
+.custom-dropdown-value {
+  color: #f4f6ff;
+}
+
+.custom-dropdown-arrow {
+  color: #9fb2fb;
+  font-size: 12px;
+}
+
+.custom-dropdown-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 35;
+  border: 1px solid #33458d;
+  border-radius: 10px;
+  background: #10183b;
+  padding: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+  box-shadow: 0 10px 24px rgba(3, 8, 26, 0.5);
+}
+
+.custom-dropdown-option {
+  margin: 0 !important;
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent !important;
+  background: transparent !important;
+  color: #dfe7ff !important;
+  padding: 8px 10px !important;
+  border-radius: 8px !important;
+}
+
+.custom-dropdown-option:hover {
+  border-color: #4052a5 !important;
+  background: #162156 !important;
+}
+
+.custom-dropdown-option.is-selected {
+  border-color: #5d76e8 !important;
+  background: rgba(93, 118, 232, 0.22) !important;
+}
+
+.custom-dropdown-empty {
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: #9fb2fb;
+  font-size: 13px;
+  background: rgba(22, 33, 86, 0.35);
+}
+
+.question-recommend-mode {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.question-recommend-mode button {
+  margin: 0;
+  padding: 5px 10px;
+  font-size: 12px;
+  border-radius: 999px;
+  background: #1b2558;
+}
+
+.question-input-wrap {
+  position: relative;
+}
+
+.question-input {
+  position: relative;
+}
+
+.question-input.is-open {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-color: #5d76e8;
+}
+
+.question-suggestion-box {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  border: 1px solid #33458d;
+  border-top: 0;
+  border-bottom-left-radius: 10px;
+  border-bottom-right-radius: 10px;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+  background: #11183b;
+  padding: 6px;
+  box-shadow: 0 10px 24px rgba(3, 8, 26, 0.5);
+}
+
+.question-suggestion-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.question-suggestion-item {
+  margin: 0 !important;
+  width: 100%;
+  text-align: left;
+  border: 1px solid #4052a5 !important;
+  background: #162156 !important;
+  color: #e5ebff !important;
+  padding: 7px 10px !important;
+  border-radius: 8px !important;
+  font-size: 13px;
+}
+
+.question-suggestion-item:hover {
+  border-color: #6f8bff !important;
+  background: #22307a !important;
+}
+
+.question-suggestion-empty {
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: #9fb2fb;
+  font-size: 13px;
+  background: rgba(22, 33, 86, 0.35);
+}
+
+.question-suggestion-spacer {
+  width: 100%;
+  pointer-events: none;
 }
 
 .voice-clone-box h3 {
   margin: 0 0 8px;
   font-size: 15px;
+}
+
+.model-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.model-title-row h3 {
+  margin: 0;
+}
+
+.mode-help-tooltip {
+  position: relative;
+  display: inline-flex;
+}
+
+.mode-help-trigger {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid #4e63b8;
+  color: #a9b9ff;
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: help;
+  background: #1a285f;
+}
+
+.mode-help-popup {
+  display: none;
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  width: 320px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid #3d4f9f;
+  background: #0f173b;
+  color: #d9e2ff;
+  font-size: 12px;
+  line-height: 1.55;
+  box-shadow: 0 10px 24px rgba(3, 8, 26, 0.45);
+  z-index: 45;
+}
+
+.mode-help-popup strong {
+  display: block;
+  margin: 0 0 4px;
+  color: #f0f4ff;
+}
+
+.mode-help-popup strong + div {
+  margin-bottom: 2px;
+}
+
+.mode-help-popup div + strong {
+  margin-top: 8px;
+}
+
+.mode-help-tooltip:hover .mode-help-popup,
+.mode-help-tooltip:focus-within .mode-help-popup {
+  display: block;
 }
 
 .consent-row {
@@ -252,7 +490,7 @@ button:disabled {
 .avatar-stage-live2d {
   background-image:
     linear-gradient(180deg, rgba(8, 14, 36, 0.2), rgba(8, 14, 36, 0.48)),
-    url("/images/live2d/haluo-hero-banner.png");
+    url("/images/live2d/unified-avatar-bg.jpg");
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
@@ -261,7 +499,10 @@ button:disabled {
 .avatar-stage-talkinghead {
   background-image:
     linear-gradient(180deg, rgba(8, 14, 36, 0.24), rgba(8, 14, 36, 0.6)),
-    radial-gradient(circle at 50% 20%, rgba(120, 205, 255, 0.16), rgba(120, 205, 255, 0) 56%);
+    url("/images/live2d/unified-avatar-bg.jpg");
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
 }
 
 .avatar-stage::before {
@@ -744,8 +985,9 @@ ul {
 }
 .chat-dialog-body {
   padding: 12px 14px;
-  max-height: 200px;
+  height: 220px;
   overflow-y: auto;
+  overflow-x: hidden;
   font-size: 0.9rem;
   line-height: 1.7;
   color: #ddd;
@@ -795,3 +1037,5 @@ ul {
   border-color: #e53935;
   color: #fff;
 }
+
+/* 已迁移至 Tailwind：LoginPage、DashboardPage、AvatarEditPage */
