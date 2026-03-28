@@ -35,6 +35,7 @@ export interface VoiceSessionDoneEvent {
 
 interface VoiceSessionClientOptions {
   voiceId?: string;
+  playbackEnabled?: boolean;
   onSpeakingChange?: OnSpeakingChange;
   onMouthOpen?: OnMouthOpen;
   onAsrPartial?: (text: string) => void;
@@ -57,6 +58,7 @@ export class VoiceSessionClient {
   private ws: WebSocket | null = null;
   private connected = false;
   private voiceId?: string;
+  private playbackEnabled = true;
   private onSpeakingChange?: OnSpeakingChange;
   private onMouthOpen?: OnMouthOpen;
   private onAsrPartial?: (text: string) => void;
@@ -66,6 +68,9 @@ export class VoiceSessionClient {
   private mediaRecorder: MediaRecorder | null = null;
   private micStream: MediaStream | null = null;
   private audioQueue: ArrayBuffer[] = [];
+  private chunkBuffer: ArrayBuffer[] = [];
+  private chunkBufferSize = 0;
+  private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private isPlaying = false;
   private audioContext: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
@@ -73,9 +78,12 @@ export class VoiceSessionClient {
   private currentSource: AudioBufferSourceNode | null = null;
   private mouthAnimTimer: ReturnType<typeof setInterval> | null = null;
   private smoothedMouthOpen = 0;
+  private static MIN_BUFFER_SIZE = 8000;
+  private static FLUSH_INTERVAL_MS = 250;
 
   constructor(options: VoiceSessionClientOptions = {}) {
     this.voiceId = options.voiceId;
+    this.playbackEnabled = options.playbackEnabled ?? true;
     this.onSpeakingChange = options.onSpeakingChange;
     this.onMouthOpen = options.onMouthOpen;
     this.onAsrPartial = options.onAsrPartial;
@@ -102,8 +110,26 @@ export class VoiceSessionClient {
       this.ws.onmessage = (event) => {
         const data = event.data;
         if (data instanceof ArrayBuffer) {
-          this.audioQueue.push(data);
-          this.playNext();
+          const firstByte = new Uint8Array(data)[0];
+          if (firstByte === 123) {
+            try {
+              const text = new TextDecoder().decode(data);
+              this.handleJsonMessage(text);
+              return;
+            } catch {
+              // 解析失败按音频处理
+            }
+          }
+          if (!this.playbackEnabled) {
+            return;
+          }
+          this.chunkBuffer.push(data);
+          this.chunkBufferSize += data.byteLength;
+          if (this.chunkBufferSize >= VoiceSessionClient.MIN_BUFFER_SIZE) {
+            this.flushChunkBuffer();
+          } else {
+            this.scheduleFlushChunkBuffer();
+          }
           return;
         }
         if (typeof data === "string") {
@@ -212,6 +238,10 @@ export class VoiceSessionClient {
       this.ws = null;
     }
     this.connected = false;
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
     if (this.audioContext) {
       this.audioContext.close();
       this.audioContext = null;
@@ -258,6 +288,33 @@ export class VoiceSessionClient {
       this.stopPlayback();
       this.audioQueue = [];
     }
+  }
+
+  private flushChunkBuffer() {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    if (this.chunkBuffer.length === 0) return;
+    const totalSize = this.chunkBuffer.reduce((sum, buf) => sum + buf.byteLength, 0);
+    const merged = new Uint8Array(totalSize);
+    let offset = 0;
+    for (const buf of this.chunkBuffer) {
+      merged.set(new Uint8Array(buf), offset);
+      offset += buf.byteLength;
+    }
+    this.chunkBuffer = [];
+    this.chunkBufferSize = 0;
+    this.audioQueue.push(merged.buffer);
+    this.playNext();
+  }
+
+  private scheduleFlushChunkBuffer() {
+    if (this.flushTimer) return;
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = null;
+      this.flushChunkBuffer();
+    }, VoiceSessionClient.FLUSH_INTERVAL_MS);
   }
 
   private async playNext() {
@@ -360,6 +417,12 @@ export class VoiceSessionClient {
 
   private stopPlayback() {
     this.audioQueue = [];
+    this.chunkBuffer = [];
+    this.chunkBufferSize = 0;
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
     if (this.currentSource) {
       try {
         this.currentSource.stop();
