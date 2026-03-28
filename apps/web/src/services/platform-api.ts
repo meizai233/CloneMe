@@ -3,7 +3,8 @@
  * 认证、数字人管理、模型管理
  */
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3001";
+const envApiBase = (import.meta.env.VITE_API_BASE_URL ?? "").trim();
+const API_BASE = envApiBase || `${window.location.protocol}//${window.location.hostname}:3001`;
 
 function getToken(): string | null {
   return localStorage.getItem("cloneme_token");

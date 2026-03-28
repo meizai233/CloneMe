@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   createLive2DAdapter,
@@ -9,10 +9,10 @@ import {
 } from "./avatar/live2dAdapter";
 import { avatarIntroScripts } from "./avatar/modeIntro.js";
 import {
-  initAvatarProfile,
   uploadAudio,
   getUploadUrl,
   fetchPersonas,
+  embedTexts,
   smartChat,
   type PersonaMode,
   type PersonaInfo
@@ -30,14 +30,26 @@ function buildOfflineReply(question: string): string {
   return "当前网络异常，建议联系人工客服 400-091-0857。问题：" + question;
 }
 
-const INTERNAL_KNOWLEDGE_DOCS = [
-  "React 性能优化优先做拆分、memo、减少无意义重渲染。",
-  "TypeScript 项目中优先给 API 返回体建立显式类型。"
-];
-
 const HARU_MODEL_URL = "/models/haru_greeter_pro_jp/runtime/haru_greeter_t05.model3.json";
 const NATORI_MODEL_URL = "/models/natori_pro_zh/runtime/natori_pro_t06.model3.json";
 const PERSONA_STORAGE_KEY = "cloneme.selectedPersona";
+const SUPPORT_DEFAULT_VOICE_SAMPLE_AUDIO_URL =
+  "https://oho-image-cdn.51downapp.cn/ohoKiroUpload/9136b0768b7340e7b83c4a24a5f1ad31_voice_1774687282952.webm";
+const SUPPORT_DEFAULT_VOICE_ID = "cosyvoice-v2-cloneme-b085f5e6261340ef8859f35cdee10714";
+const GENERAL_DEFAULT_VOICE_SAMPLE_AUDIO_URL =
+  "https://oho-image-cdn.51downapp.cn/ohoKiroUpload/aa6dba6a16334fccb905776fc3fdfdfe_voice_1774593069461.webm";
+const GENERAL_DEFAULT_VOICE_ID = "cosyvoice-v2-cloneme-de1186494da24f33992ab554e7ce480e";
+const AFTER_SALES_DEFAULT_VOICE_SAMPLE_AUDIO_URL =
+  "https://oho-image-cdn.51downapp.cn/ohoKiroUpload/4cec2092568b4a7cb5e5e7cfbf7e1f85_voice_1774686592038.webm";
+const AFTER_SALES_DEFAULT_VOICE_ID = "cosyvoice-v2-gmy-901211a49aee4aca921411e146b6476d";
+const VOICE_NAME_OVERRIDES_BY_ID: Record<string, string> = {
+  "cosyvoice-v2-cloneme-b085f5e6261340ef8859f35cdee10714": "冯婉妍",
+  "cosyvoice-v2-cloneme-de1186494da24f33992ab554e7ce480e": "邓梦博",
+  "cosyvoice-v2-gmy-901211a49aee4aca921411e146b6476d": "郭梦艳",
+};
+const VOICE_NAME_OVERRIDES_BY_AUDIO_URL: Record<string, string> = {
+  "https://oho-image-cdn.51downapp.cn/ohoKiroUpload/4cec2092568b4a7cb5e5e7cfbf7e1f85_voice_1774686592038.webm": "郭梦艳",
+};
 const ALL_AVATAR_EMOTIONS: AvatarEmotion[] = [
   "neutral",
   "happy",
@@ -80,6 +92,201 @@ const GESTURE_LABELS: Record<AvatarGesture, string> = {
   discountHighlight: "优惠强调",
   comfortExplain: "安抚解释",
 };
+
+const QUESTION_GUIDE_SEED: string[] = [
+  "哈啰租电动车有哪些套餐，怎么选最划算？",
+  "新用户第一次租车有什么优惠？",
+  "如果骑行中途没电了，应该怎么处理？",
+  "租车流程是怎样的，多久可以取车？",
+  "押金和免押规则是什么？",
+  "临时停车会不会继续计费？",
+  "怎么结束订单才不会多扣费？",
+  "遇到车辆故障或客服响应慢怎么投诉？",
+];
+
+function cosineSimilarity(left: number[], right: number[]): number {
+  if (!left.length || !right.length || left.length !== right.length) return 0;
+
+  let dot = 0;
+  let leftNorm = 0;
+  let rightNorm = 0;
+
+  for (let i = 0; i < left.length; i += 1) {
+    dot += left[i] * right[i];
+    leftNorm += left[i] * left[i];
+    rightNorm += right[i] * right[i];
+  }
+
+  if (!leftNorm || !rightNorm) return 0;
+  return dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm));
+}
+type DropdownOption = {
+  value: string;
+  label: string;
+};
+
+function CustomDropdown(props: {
+  value: string;
+  placeholder: string;
+  options: DropdownOption[];
+  onChange: (value: string) => void;
+  disabled?: boolean;
+  className?: string;
+}) {
+  const { value, placeholder, options, onChange, disabled = false, className } = props;
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const selected = options.find((item) => item.value === value);
+
+  useEffect(() => {
+    if (disabled) {
+      setOpen(false);
+    }
+  }, [disabled]);
+
+  useEffect(() => {
+    if (!open) return;
+    function handleDocumentClick(event: MouseEvent) {
+      if (!rootRef.current) return;
+      if (event.target instanceof Node && !rootRef.current.contains(event.target)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleDocumentClick);
+    return () => {
+      document.removeEventListener("mousedown", handleDocumentClick);
+    };
+  }, [open]);
+
+  return (
+    <div ref={rootRef} className={`custom-dropdown ${className ?? ""}`}>
+      <button
+        type="button"
+        className={`custom-dropdown-trigger ${open ? "is-open" : ""}`}
+        disabled={disabled}
+        onClick={() => setOpen((prev) => !prev)}
+      >
+        <span className={selected ? "custom-dropdown-value" : "custom-dropdown-placeholder"}>
+          {selected?.label ?? placeholder}
+        </span>
+        <span className="custom-dropdown-arrow">▾</span>
+      </button>
+      {open && (
+        <div className="custom-dropdown-menu">
+          {options.map((item) => (
+            <button
+              key={item.value}
+              type="button"
+              className={`custom-dropdown-option ${item.value === value ? "is-selected" : ""}`}
+              onClick={() => {
+                onChange(item.value);
+                setOpen(false);
+              }}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SearchableDropdown(props: {
+  value: string;
+  placeholder: string;
+  options: DropdownOption[];
+  loading?: boolean;
+  emptyText?: string;
+  onInputChange: (value: string) => void;
+  onSelect: (value: string) => void;
+  disabled?: boolean;
+  className?: string;
+}) {
+  const {
+    value,
+    placeholder,
+    options,
+    loading = false,
+    emptyText = "暂无匹配项",
+    onInputChange,
+    onSelect,
+    disabled = false,
+    className,
+  } = props;
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (disabled) {
+      setOpen(false);
+    }
+  }, [disabled]);
+
+  useEffect(() => {
+    if (!open) return;
+    function handleDocumentClick(event: MouseEvent) {
+      if (!rootRef.current) return;
+      if (event.target instanceof Node && !rootRef.current.contains(event.target)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleDocumentClick);
+    return () => {
+      document.removeEventListener("mousedown", handleDocumentClick);
+    };
+  }, [open]);
+
+  return (
+    <div ref={rootRef} className={`custom-dropdown ${className ?? ""}`}>
+      <div className={`custom-dropdown-trigger custom-dropdown-trigger-input ${open ? "is-open" : ""}`}>
+        <input
+          className="custom-dropdown-input"
+          value={value}
+          placeholder={placeholder}
+          onFocus={() => setOpen(true)}
+          onChange={(event) => {
+            onInputChange(event.target.value);
+            setOpen(true);
+          }}
+          disabled={disabled}
+        />
+        <button
+          type="button"
+          className="custom-dropdown-arrow-button"
+          onClick={() => setOpen((prev) => !prev)}
+          disabled={disabled}
+          aria-label="切换问题推荐列表"
+        >
+          <span className="custom-dropdown-arrow">▾</span>
+        </button>
+      </div>
+      {open && (
+        <div className="custom-dropdown-menu">
+          {loading ? (
+            <div className="custom-dropdown-empty">推荐问题加载中...</div>
+          ) : options.length > 0 ? (
+            options.map((item) => (
+              <button
+                key={item.value}
+                type="button"
+                className={`custom-dropdown-option ${item.value === value ? "is-selected" : ""}`}
+                onClick={() => {
+                  onSelect(item.value);
+                  setOpen(false);
+                }}
+              >
+                {item.label}
+              </button>
+            ))
+          ) : (
+            <div className="custom-dropdown-empty">{emptyText}</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function Avatar2D(props: {
   speaking: boolean;
@@ -202,6 +409,8 @@ export default function App() {
   const lastGestureRef = useRef<AvatarGesture>("none");
   const lastGestureAtRef = useRef(0);
   const gestureResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const introPlayedOnEntryRef = useRef(false);
+  const autoVoicePersonaRef = useRef<string | null>(null);
 
   const [personas, setPersonas] = useState<PersonaInfo[]>([]);
   const [selectedPersona, setSelectedPersona] = useState<string>(() => {
@@ -222,7 +431,6 @@ export default function App() {
   const [activeGesture, setActiveGesture] = useState<AvatarGesture>("none");
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [mouthOpen, setMouthOpen] = useState(0);
-  const [initLoading, setInitLoading] = useState(false);
   const [chatLoading, setChatLoading] = useState(false);
   const [avatarReady, setAvatarReady] = useState(false);
   const [avatarRuntimeError, setAvatarRuntimeError] = useState<string | null>(null);
@@ -255,6 +463,11 @@ export default function App() {
   const [realtimePartialText, setRealtimePartialText] = useState("");
   const [realtimeFinalText, setRealtimeFinalText] = useState("");
   const [realtimeLoading, setRealtimeLoading] = useState(false);
+  const [questionHistory, setQuestionHistory] = useState<string[]>([]);
+  const [questionSuggestions, setQuestionSuggestions] = useState<string[]>(() => QUESTION_GUIDE_SEED.slice(0, 5));
+  const [questionSuggestLoading, setQuestionSuggestLoading] = useState(false);
+  const suggestionRequestIdRef = useRef(0);
+  const semanticEmbeddingCacheRef = useRef<Map<string, number[]>>(new Map());
 
   // 声音选择：克隆 vs 已有声音，互斥
   const [voiceMode, setVoiceMode] = useState<"clone" | "existing">("clone");
@@ -271,7 +484,51 @@ export default function App() {
     return `user_${uuid}`;
   });
 
-  const loading = initLoading || chatLoading || voiceCloneLoading || realtimeLoading;
+  const loading = chatLoading || voiceCloneLoading || realtimeLoading;
+  const questionCandidates = useMemo(
+    () => Array.from(new Set([...questionHistory, ...QUESTION_GUIDE_SEED])),
+    [questionHistory]
+  );
+
+  const buildSemanticSuggestions = useCallback(async (input: string, candidates: string[]): Promise<string[]> => {
+    if (!input.trim() || candidates.length === 0) return [];
+
+    const [queryVector] = await embedTexts(input);
+    if (!Array.isArray(queryVector)) return [];
+
+    const cache = semanticEmbeddingCacheRef.current;
+    const uncached = candidates.filter((item) => !cache.has(item));
+
+    if (uncached.length > 0) {
+      const vectors = await embedTexts(uncached);
+      uncached.forEach((item, idx) => {
+        const vector = vectors[idx];
+        if (Array.isArray(vector) && vector.length > 0) {
+          cache.set(item, vector);
+        }
+      });
+    }
+
+    return candidates
+      .map((text) => ({
+        text,
+        score: cosineSimilarity(queryVector, cache.get(text) ?? []),
+      }))
+      .filter((item) => item.score > 0.25)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 6)
+      .map((item) => item.text);
+  }, []);
+  const getVoiceDisplayName = useCallback((voice: VoiceInfo): string => {
+    if (voice.voice_id && VOICE_NAME_OVERRIDES_BY_ID[voice.voice_id]) {
+      return VOICE_NAME_OVERRIDES_BY_ID[voice.voice_id];
+    }
+    if (voice.audio_url && VOICE_NAME_OVERRIDES_BY_AUDIO_URL[voice.audio_url]) {
+      return VOICE_NAME_OVERRIDES_BY_AUDIO_URL[voice.audio_url];
+    }
+    return voice.speaker_name || voice.voice_id;
+  }, []);
+  const selectableVoices: VoiceInfo[] = existingVoices;
 
   // 加载数字人信息和已有声音列表
   useEffect(() => {
@@ -279,11 +536,43 @@ export default function App() {
       getAvatar(avatarId).then(res => {
         const a = res.avatar;
         setAvatarName(a.name);
-        if (a.voice_id) { setVoiceId(a.voice_id); setVoiceMode("existing"); }
       }).catch(() => {});
     }
     listVoices().then(res => setExistingVoices(res.voices || [])).catch(() => {});
   }, [avatarId]);
+
+  useEffect(() => {
+    const input = question.trim();
+    const requestId = ++suggestionRequestIdRef.current;
+    const timer = setTimeout(() => {
+      const candidates = questionCandidates.filter((item) => item !== input);
+
+      if (!input) {
+        setQuestionSuggestLoading(false);
+        setQuestionSuggestions(QUESTION_GUIDE_SEED.slice(0, 5));
+        return;
+      }
+
+      setQuestionSuggestLoading(true);
+      void buildSemanticSuggestions(input, candidates.slice(0, 40))
+        .then((semantic) => {
+          if (requestId !== suggestionRequestIdRef.current) return;
+          setQuestionSuggestions(semantic.length > 0 ? semantic : QUESTION_GUIDE_SEED.slice(0, 6));
+        })
+        .catch(() => {
+          if (requestId !== suggestionRequestIdRef.current) return;
+          setQuestionSuggestions(QUESTION_GUIDE_SEED.slice(0, 6));
+        })
+        .finally(() => {
+          if (requestId !== suggestionRequestIdRef.current) return;
+          setQuestionSuggestLoading(false);
+        });
+    }, 180);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [buildSemanticSuggestions, question, questionCandidates]);
 
   // 保存数字人配置
   async function onSaveAvatar() {
@@ -379,7 +668,7 @@ export default function App() {
   }, []);
 
   const runModeIntro = useCallback(
-    async (targetMode: PersonaMode) => {
+    async (targetMode: PersonaMode, preferredVoiceId?: string | null) => {
       if (!avatarReady) return;
       const script = avatarIntroScripts[targetMode];
       if (!script) return;
@@ -391,7 +680,8 @@ export default function App() {
       setAnswer(`虚拟形象名称：${script.avatarName}`);
       const ttsClient = ttsClientRef.current;
       if (ttsClient) {
-        ttsClient.setVoiceId(voiceId ?? undefined);
+        const nextVoiceId = preferredVoiceId ?? voiceId;
+        ttsClient.setVoiceId(nextVoiceId ?? undefined);
         try {
           await ttsClient.connect();
         } catch {
@@ -510,6 +800,41 @@ export default function App() {
     [personas]
   );
 
+  const resolveDefaultVoiceIdForPersona = useCallback(
+    (personaKey: string): string | null => {
+      const matchedPersona = personas.find((item) => item.key === personaKey);
+      const personaText = `${personaKey} ${matchedPersona?.name ?? ""}`.toLowerCase();
+
+      if (personaKey === "general" || personaText.includes("通用") || personaText.includes("general")) {
+        return GENERAL_DEFAULT_VOICE_ID;
+      }
+
+      if (
+        personaKey === "after_sales" ||
+        personaText.includes("售后") ||
+        personaText.includes("after_sales") ||
+        personaText.includes("aftersales") ||
+        personaText.includes("after-sale")
+      ) {
+        return AFTER_SALES_DEFAULT_VOICE_ID;
+      }
+
+      if (
+        personaKey === "pre_sales" ||
+        personaText.includes("售前") ||
+        personaText.includes("presale") ||
+        personaText.includes("pre_sale") ||
+        personaText.includes("support") ||
+        personaText.includes("sales")
+      ) {
+        return SUPPORT_DEFAULT_VOICE_ID;
+      }
+
+      return null;
+    },
+    [personas]
+  );
+
   const resolveLive2DModelUrl = useCallback(
     (personaKey: string): string => {
       const matchedPersona = personas.find((item) => item.key === personaKey);
@@ -568,11 +893,25 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (introPlayedOnEntryRef.current) return;
+    if (!avatarReady) return;
     const introMode = resolveIntroMode(selectedPersona);
-    if (introMode) {
-      void runModeIntro(introMode);
-    }
-  }, [avatarReady, resolveIntroMode, runModeIntro, selectedPersona]);
+    if (!introMode) return;
+    introPlayedOnEntryRef.current = true;
+    const defaultVoiceId = resolveDefaultVoiceIdForPersona(selectedPersona);
+    void runModeIntro(introMode, defaultVoiceId);
+  }, [avatarReady, resolveDefaultVoiceIdForPersona, resolveIntroMode, runModeIntro, selectedPersona]);
+
+  useEffect(() => {
+    if (autoVoicePersonaRef.current === selectedPersona) return;
+    autoVoicePersonaRef.current = selectedPersona;
+    const defaultVoiceId = resolveDefaultVoiceIdForPersona(selectedPersona);
+    if (!defaultVoiceId) return;
+    setVoiceMode("existing");
+    setVoiceId(defaultVoiceId);
+    ttsClientRef.current?.setVoiceId(defaultVoiceId);
+    voiceSessionRef.current?.setVoiceId(defaultVoiceId);
+  }, [resolveDefaultVoiceIdForPersona, selectedPersona]);
 
   useEffect(() => {
     if (!(chatLoading && chatPhase === "thinking")) {
@@ -766,33 +1105,6 @@ export default function App() {
     },
     [cleanupPlayback]
   );
-
-  const runInitAvatar = useCallback(async () => {
-    setInitLoading(true);
-    setErrorMessage(null);
-    try {
-      await initAvatarProfile({
-        creatorName: "CloneMe Demo 博主",
-        domain: "前端工程",
-        docs: INTERNAL_KNOWLEDGE_DOCS
-      });
-      setAnswer("分身初始化完成。现在可以提问，我会按你选的模式回答。");
-      setReferences([]);
-      adapterRef.current?.setEmotion("happy");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setErrorMessage(message);
-      setAnswer(`初始化失败：${message}`);
-      setReferences(["离线演示可继续：直接点击开始提问"]);
-    } finally {
-      setInitLoading(false);
-    }
-  }, []);
-
-  async function initAvatar() {
-    lastActionRef.current = runInitAvatar;
-    await runInitAvatar();
-  }
 
   const startRecording = useCallback(async () => {
     try {
@@ -993,13 +1305,17 @@ export default function App() {
 
     // 提问后清空输入框
     setQuestion("");
+    setQuestionHistory((prev) => [safeQuestion, ...prev.filter((item) => item !== safeQuestion)].slice(0, 40));
 
     try {
       lastGestureRef.current = "none";
       lastGestureAtRef.current = 0;
 
-      // 停止之前的 TTS 播放
+      // 提问时按角色优先使用默认音色（售前=冯婉妍，售后=郭梦艳）
+      const askVoiceId = resolveDefaultVoiceIdForPersona(selectedPersona) ?? voiceId ?? undefined;
       ttsClientRef.current?.stop();
+      ttsClientRef.current?.setVoiceId(askVoiceId);
+      voiceSessionRef.current?.setVoiceId(askVoiceId);
 
       // 确保 TTS 连接就绪
       try {
@@ -1062,7 +1378,8 @@ export default function App() {
         markGesture(chosenGesture);
       }
 
-      if (data.audioUrl) {
+      const shouldUseSelectedTtsVoice = Boolean(askVoiceId);
+      if (!shouldUseSelectedTtsVoice && data.audioUrl) {
         try {
           await playAnswerAudio(data.audioUrl, data.phonemeCues);
         } catch {
@@ -1099,9 +1416,13 @@ export default function App() {
     playFallbackLipSync,
     question,
     resolveLive2DModelUrl,
+    resolveDefaultVoiceIdForPersona,
+    hasCustomVoiceClone,
     stopRealtimeSession,
     stopModeIntro,
-    stopTypewriter
+    stopTypewriter,
+    voiceId,
+    voiceMode,
   ]);
 
   async function onAsk(event: FormEvent) {
@@ -1143,20 +1464,8 @@ export default function App() {
           </div>
           {saveMsg && <p style={{ fontSize: "0.8rem", color: saveMsg === "保存成功" ? "#4caf50" : "#e53935", margin: "0 0 8px" }}>{saveMsg}</p>}
 
-          <h1>CloneMe - 知识博主 AI 分身</h1>
-          <p className="subtitle">聊天 + 语音驱动口型 + 2D 数字形象（最小可演示版）</p>
-          <button onClick={initAvatar} disabled={loading}>
-            {initLoading ? "初始化中..." : "1) 初始化分身"}
-          </button>
-
-          <div className="question-guide-box">
-            <h3>引导提问（预留）</h3>
-            <p>这里会放常见问题引导，帮助用户快速开始提问。</p>
-            <p className="question-guide-placeholder">
-              示例：如何开始 / 套餐怎么选 / 租车流程是什么 / 我现在很生气，要投诉你们客服怎么处理（暂未开放）
-            </p>
-          </div>
-
+          <h1>CloneMe - 哈啰租电动车 AI 数字人</h1>
+          <p className="subtitle">租车咨询 + 语音播报 + 2D 数字形象（业务演示版）</p>
           <div className="mode-row">
             {personas.map((p) => (
               <button
@@ -1237,31 +1546,37 @@ export default function App() {
 
             {voiceMode === "existing" && (
               <div>
-                {existingVoices.length === 0 ? (
+                {selectableVoices.length === 0 ? (
                   <p className="voice-hint">暂无已有声音，请先克隆一个</p>
                 ) : (
                   <>
-                    <select
+                    <CustomDropdown
                       value={voiceId || ""}
-                      onChange={(e) => {
-                        const vid = e.target.value || null;
+                      placeholder="-- 请选择声音 --"
+                      options={[
+                        { value: "", label: "-- 请选择声音 --" },
+                        ...selectableVoices.map((v) => ({
+                          value: v.voice_id,
+                          label: `${getVoiceDisplayName(v)}${v.created_at ? ` (${v.created_at.slice(0, 10)})` : ""}`,
+                        })),
+                      ]}
+                      onChange={(nextValue) => {
+                        const vid = nextValue || null;
                         setVoiceId(vid);
+                        ttsClientRef.current?.setVoiceId(vid ?? undefined);
+                        voiceSessionRef.current?.setVoiceId(vid ?? undefined);
                         if (vid) setHasCustomVoiceClone(true);
-                        if (avatarId) { updateAvatar(avatarId, { voice_id: vid || "" } as any).catch(() => {}); }
+                        if (avatarId) {
+                          updateAvatar(avatarId, { voice_id: vid || "" } as any).catch(() => {});
+                        }
                       }}
-                    >
-                      <option value="">-- 请选择声音 --</option>
-                      {existingVoices.map(v => (
-                        <option key={v.voice_id} value={v.voice_id}>
-                          {v.speaker_name || v.voice_id}{v.created_at ? ` (${v.created_at.slice(0, 10)})` : ""}
-                        </option>
-                      ))}
-                    </select>
+                      disabled={loading}
+                    />
                     {/* 选中声音后显示试听按钮 */}
                     {voiceId && (() => {
-                      const selected = existingVoices.find(v => v.voice_id === voiceId);
+                      const selected = selectableVoices.find(v => v.voice_id === voiceId);
                       return selected?.audio_url ? (
-                        <button type="button" onClick={() => new Audio(selected.audio_url).play()} style={{ marginLeft: 8, fontSize: "0.8rem", padding: "4px 10px", borderRadius: 6, border: "1px solid #4059d4", background: "rgba(64,89,212,0.1)", color: "#6b7ff5", cursor: "pointer" }}>▶ 试听</button>
+                        <button type="button" onClick={() => new Audio(selected.audio_url).play()} style={{ marginLeft: 8, marginTop: 6, fontSize: "0.8rem", padding: "4px 10px", borderRadius: 6, border: "1px solid #4059d4", background: "rgba(64,89,212,0.1)", color: "#6b7ff5", cursor: "pointer" }}>▶ 试听</button>
                       ) : null;
                     })()}
                   </>
@@ -1274,10 +1589,21 @@ export default function App() {
           <form onSubmit={onAsk}>
             <label className="block">
               <span>问题</span>
-              <input value={question} onChange={(e) => setQuestion(e.target.value)} />
+              <SearchableDropdown
+                value={question}
+                placeholder="输入问题，自动推荐相似问法"
+                options={questionSuggestions
+                  .filter((item) => item !== question)
+                  .map((item) => ({ value: item, label: item }))}
+                loading={questionSuggestLoading}
+                emptyText="暂无相似问题，可直接使用当前输入"
+                onInputChange={setQuestion}
+                onSelect={setQuestion}
+                disabled={loading}
+              />
             </label>
             <button type="submit" disabled={loading || realtimeActive}>
-              {chatLoading ? "思考中..." : "3) 开始提问"}
+              {chatLoading ? "思考中..." : "开始提问"}
             </button>
           </form>
 

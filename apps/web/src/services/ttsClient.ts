@@ -3,7 +3,8 @@
  * 管理与后端 /ws/tts 的连接，支持句子队列播放 + 口型驱动
  */
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3001";
+const envApiBase = (import.meta.env.VITE_API_BASE_URL ?? "").trim();
+const API_BASE_URL = envApiBase || `${window.location.protocol}//${window.location.hostname}:3001`;
 const WS_URL = API_BASE_URL.replace(/^http/, "ws") + "/ws/tts";
 const readEnvNumber = (raw: unknown, fallback: number, min: number, max: number) => {
   const parsed = Number(raw);
