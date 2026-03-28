@@ -109,6 +109,7 @@ export default function PreviewPage() {
   useEffect(() => {
     const voiceSession = new VoiceSessionClient({
       voiceId: avatar?.voice_id || undefined,
+      playbackEnabled: false,
       onSpeakingChange: (s) => {
         adapterRef.current?.setSpeaking(s);
         setIsSpeaking(s);
