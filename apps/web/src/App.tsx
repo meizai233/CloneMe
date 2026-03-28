@@ -528,6 +528,7 @@ export default function App() {
   const ttsClientRef = useRef<TTSClient | null>(null);
   const voiceSessionRef = useRef<VoiceSessionClient | null>(null);
   const sentenceBufferRef = useRef<SentenceBuffer | null>(null);
+  const realtimeSentenceBufferRef = useRef<SentenceBuffer | null>(null);
   const typingQueueRef = useRef("");
   const typingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastGestureRef = useRef<AvatarGesture>("none");
@@ -621,6 +622,7 @@ export default function App() {
   });
 
   const loading = chatLoading || voiceCloneLoading || realtimeLoading;
+  const askButtonDisabled = voiceCloneLoading || realtimeLoading || realtimeActive;
   useEffect(() => {
     runtimeRef.current = runtime;
   }, [runtime]);
@@ -1230,6 +1232,7 @@ export default function App() {
   useEffect(() => {
     const voiceSession = new VoiceSessionClient({
       voiceId: voiceId ?? undefined,
+      playbackEnabled: false,
       onSpeakingChange: (speaking) => {
         adapterRef.current?.setSpeaking(speaking);
         setIsSpeaking(speaking);
@@ -1254,10 +1257,18 @@ export default function App() {
         setReferences([]);
         setChatPhase("thinking");
         setChatLoading(true);
+        ttsClientRef.current?.stop();
+        const realtimeVoiceId = resolveDefaultVoiceIdForPersona(selectedPersona) ?? voiceId ?? undefined;
+        ttsClientRef.current?.setVoiceId(realtimeVoiceId);
+        const sentenceBuffer = new SentenceBuffer((sentence) => {
+          ttsClientRef.current?.sendText(sentence);
+        });
+        realtimeSentenceBufferRef.current = sentenceBuffer;
       },
       onLlmDelta: (text) => {
         setChatPhase("typing");
         setAnswer((prev) => prev + text);
+        realtimeSentenceBufferRef.current?.push(text);
       },
       onLlmDone: (event) => {
         const modelCapability = resolveAvatarModelCapability(resolveCurrentAvatarModelUrl(selectedPersona));
@@ -1280,6 +1291,9 @@ export default function App() {
         }
         setAnswer(event.reply);
         setReferences(event.references);
+        realtimeSentenceBufferRef.current?.flush();
+        realtimeSentenceBufferRef.current = null;
+        ttsClientRef.current?.finishCurrentTask();
         setChatPhase("idle");
         setChatLoading(false);
       }
@@ -1460,6 +1474,9 @@ export default function App() {
   const stopRealtimeSession = useCallback(() => {
     voiceSessionRef.current?.interrupt();
     voiceSessionRef.current?.stopRecording();
+    realtimeSentenceBufferRef.current?.reset();
+    realtimeSentenceBufferRef.current = null;
+    ttsClientRef.current?.stop();
     setRealtimeActive(false);
     setRealtimeLoading(false);
     setRealtimePartialText("");
@@ -1469,6 +1486,7 @@ export default function App() {
 
   const startRealtimeSession = useCallback(async () => {
     stopModeIntro();
+    ttsClientRef.current?.stop();
     cleanupPlayback();
     stopTypewriter();
     setErrorMessage(null);
@@ -1872,7 +1890,7 @@ export default function App() {
                 disabled={loading}
               />
             </label>
-            <button type="submit" disabled={loading || realtimeActive}>
+            <button type="submit" disabled={askButtonDisabled}>
               {chatLoading ? "思考中..." : "开始提问"}
             </button>
           </form>
